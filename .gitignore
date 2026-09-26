@@ -1,0 +1,42 @@
+# Ignore everything by default
+*
+
+# Whitelist: un-ignore exactly what is versioned
+!.gitignore
+!/.python-version
+!/LICENSE
+!/README.md
+!/pyproject.toml
+!/uv.lock
+!/src/
+!/src/**
+!/tests/
+!/tests/**
+!/.opencode/
+!/.opencode/plugins/
+!/.opencode/plugins/**
+!/.opencode/commands/
+!/.opencode/commands/**
+
+# Never commit real output, model weights or reference voices.
+/tts_output/
+/voices/
+/logs/
+*.wav
+*.mp3
+*.flac
+*.pt
+*.safetensors
+
+# Re-ignore generated artifacts. These come AFTER the !/src/** and !/tests/**
+# un-ignores above on purpose: a whitelist entry like !/src/** re-includes
+# everything beneath it, byte-compiled caches included, and gitignore resolves
+# ties by last match. Without these lines, a plain `git add .` stages .pyc
+# files -- which is exactly the failure a whitelist-first setup is meant to
+# make impossible.
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/

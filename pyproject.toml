@@ -1,0 +1,86 @@
+[project]
+name = "mcp-agent-chatterbox"
+version = "0.1.0"
+description = "MCP server for local GPU-accelerated text-to-speech with Chatterbox - turbo, multilingual, and zero-shot voice cloning."
+readme = "README.md"
+authors = [
+    { name = "Christof Milius" }
+]
+license = "MIT"
+# 3.13 only, on purpose. chatterbox-tts pins torch==2.6.0 on Python < 3.14 but
+# torch>=2.9.0 on 3.14+, so an open-ended range cannot be resolved against a
+# single torch pin. 3.13 is the widest-tested interpreter that works with the
+# 2.6.0 CUDA wheels.
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "mcp[cli]>=2.0.0",
+    "chatterbox-tts>=0.1.7",
+    # Pinned to the exact versions chatterbox-tts itself requires, so that
+    # redirecting them to the CUDA wheel index below cannot fork the
+    # resolution. chatterbox-tts hard-pins torch/torchaudio 2.6.0 on
+    # Python < 3.14, and its S3Gen decoder is not validated against
+    # newer torch releases.
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+    "setuptools<81",
+]
+
+[project.scripts]
+mcp-agent-chatterbox = "mcp_agent_chatterbox:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.10.0",
+]
+
+# Chatterbox on Windows: the default PyPI torch wheel is already a CUDA build,
+# but pinning the official CUDA index makes the accelerator explicit and
+# reproducible instead of an accident of the platform. cu124 is the newest
+# CUDA index that carries the 2.6.0 release chatterbox-tts requires; cu126/cu128
+# only exist from torch 2.7 onwards. A driver of 525+ is needed for cu124, so
+# this stays compatible with newer drivers (CUDA is backward compatible).
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchaudio = { index = "pytorch-cu124" }
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+src = ["src"]
+extend-exclude = [".venv", "tts_output", "voices", "logs"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP"]
+ignore = ["E501"]
+
+# Point pyright at the project venv. Without this it resolves third-party
+# imports against the system Python and reports every one of them as missing,
+# which buries the findings that matter.
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+include = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:cacheprovider"
+
+[tool.coverage.run]
+source = ["mcp_agent_chatterbox"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+]
