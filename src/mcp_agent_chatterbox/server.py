@@ -8,7 +8,7 @@ registers the tool surface. Uses mcp 2.x (`mcp.server.mcpserver.MCPServer`).
 from __future__ import annotations
 
 import logging
-from typing import Any, cast
+from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
 
@@ -88,25 +88,40 @@ def create_server(ctx: AppContext | None = None) -> MCPServer:
     return server
 
 
-#: Transports MCPServer.run() accepts. Kept as a Literal so the value handed to
-#: the SDK is checked by the type system rather than cast past it.
-TRANSPORTS: tuple[str, ...] = ("stdio", "sse", "streamable-http")
+#: The transports MCPServer.run() accepts, matching the SDK's own Literal
+#: exactly. Declaring it here (instead of passing a bare str) means the type
+#: checker validates the value handed to the SDK -- no cast required.
+Transport = Literal["stdio", "sse", "streamable-http"]
+TRANSPORTS: tuple[Transport, ...] = ("stdio", "sse", "streamable-http")
 
 
-def run(transport: str = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:
+def run(transport: Transport = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:
     """
     Build and run the server.
 
     transport: "stdio" (default, what opencode uses), "sse" or
                "streamable-http". host/port apply to the network transports.
+
+    Only stdio is covered by the test suite and the end-to-end check. The HTTP
+    transports are wired through the SDK but unverified -- see the concurrency
+    and authentication notes in README.md before exposing one on a network.
     """
+    # Reachable only from an untyped caller (argparse hands us a str); the
+    # membership test narrows to Transport for the calls below.
     if transport not in TRANSPORTS:
         raise SystemExit(f"unknown transport {transport!r}; choose one of {', '.join(TRANSPORTS)}")
     server = create_server()
     if transport == "stdio":
         server.run(transport="stdio")
     else:
-        server.run(transport=cast(Any, transport), host=host, port=port)
+        server.run(transport=transport, host=host, port=port)
 
 
-__all__ = ["SERVER_NAME", "TRANSPORTS", "build_context", "create_server", "run"]
+__all__ = [
+    "SERVER_NAME",
+    "TRANSPORTS",
+    "Transport",
+    "build_context",
+    "create_server",
+    "run",
+]

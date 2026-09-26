@@ -25,11 +25,14 @@ Two constraints shape the implementation.
 
 from __future__ import annotations
 
+import functools
 import gc
 import importlib.util
 import logging
+import threading
 import time
-from typing import Any, NoReturn
+from collections.abc import Callable
+from typing import Any, NoReturn, TypeVar, cast
 
 from mcp_agent_chatterbox.config import Config
 from mcp_agent_chatterbox.errors import ToolFault
@@ -58,6 +61,20 @@ def _load_torch():
     return torch
 
 
+F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _serialised[F: Callable[..., Any]](fn: F) -> F:
+    """Run `fn` under the engine lock. Re-entrant, so synthesize() may load()."""
+
+    @functools.wraps(fn)
+    def wrapper(self: ChatterboxEngine, *args: Any, **kwargs: Any) -> Any:
+        with self._lock:
+            return fn(self, *args, **kwargs)
+
+    return cast(F, wrapper)
+
+
 class ChatterboxEngine:
     """Owns model lifecycle, device selection and synthesis."""
 
@@ -65,6 +82,22 @@ class ChatterboxEngine:
         self.cfg = cfg or Config()
         self._device: str | None = None
         self._loaded_key: _CACHE_KEY | None = None
+        # Guards the resident-model critical section: load / evict / generate.
+        #
+        # This is invisible over stdio, where the MCP transport serialises one
+        # client's tool calls. It is not invisible over streamable-http or sse,
+        # where several clients share this one process. Without the lock:
+        #   * two threads can both miss the _MODEL_CACHE check and both call
+        #     from_pretrained(), putting two copies of the weights on the card
+        #     and OOMing a 12 GB GPU that the preflight check already cleared;
+        #   * a request for model B can _evict_others() -- gc.collect() and
+        #     torch.cuda.empty_cache() -- while request A is still generating
+        #     with the model being evicted.
+        # An RLock, not a Lock, because synthesize() calls load() while holding
+        # it. One model, one GPU: serialising is the correct behaviour, not a
+        # limitation. Reads (status, free_vram_mb) deliberately stay lock-free
+        # so a 10s model load never blocks a tts_status call.
+        self._lock = threading.RLock()
 
     # -- device selection -----------------------------------------------------
     def resolve_device(self) -> str:
@@ -280,6 +313,7 @@ class ChatterboxEngine:
             )
         logger.warning("[engine] %s", msg)
 
+    @_serialised
     def load(self, model_key: str, t3_model: str | None = None) -> tuple[Any, str, ModelSpec]:
         """
         Return (model, device, spec) for `model_key`, loading it if needed.
@@ -382,6 +416,7 @@ class ChatterboxEngine:
             except Exception:  # noqa: BLE001
                 pass
 
+    @_serialised
     def unload(self) -> dict:
         """Release the resident model and return the freed VRAM, if any."""
         was = self.loaded_model
@@ -397,6 +432,7 @@ class ChatterboxEngine:
         }
 
     # -- synthesis ------------------------------------------------------------
+    @_serialised
     def synthesize(
         self,
         text: str,

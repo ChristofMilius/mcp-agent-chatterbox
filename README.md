@@ -245,6 +245,59 @@ The CLI `speak` subcommand shares its code path with the MCP tool
 (`mcp_agent_chatterbox.speak.speak_once`), so it is the fastest way to check a
 fresh install.
 
+## Web surface (HTTP transport)
+
+Yes, there is one, and it is the least-comfortable part of this server. Read
+this before binding it to anything but loopback.
+
+```bash
+# streamable-http on loopback (the default host)
+uv run mcp-agent-chatterbox serve --http --port 8123
+# endpoint: http://127.0.0.1:8123/mcp
+```
+
+`serve` takes `--http` (a flag), not `--transport <name>`. The underlying
+`server.run()` also accepts `"sse"`, but **no CLI path reaches it** — it is
+library-only and deprecated in the MCP spec. Prefer `streamable-http`.
+
+**What was verified.** A real MCP client over real uvicorn: 5 tools advertised,
+`tts_status`, `speak` and `tts_unload` all correct, plus a 4-client concurrent
+burst on a cold engine that produced exactly **one** weight load. That last one
+is the load-bearing test — see the concurrency note below.
+
+**No authentication. None.** There is no token, no TLS, no per-client identity.
+`--host` defaults to `127.0.0.1`, which is the only thing keeping this off your
+network. `--host 0.0.0.0` publishes an unauthenticated text-to-speech endpoint
+to every host that can route to you. Do not do that on an untrusted network.
+
+**One process, one engine, all clients share it.** The HTTP server builds a
+single `AppContext`, so:
+
+- `stop_speech()` stops playback for *every* connected client, not just yours.
+- `tts_unload()` frees the GPU out from under any in-flight `speak`.
+- There is no per-client output directory; all sessions write to the same
+  `output_dir`.
+
+**Concurrent clients are a queue, not a parallel server.** Measured with 4
+simultaneous clients: per-call wall times of 1.63s / 3.34s / 4.72s / 6.22s — a
+staircase, because `synthesize()` holds an engine-wide lock (see below). Four
+clients took 6.4s where a parallel server would take ~1.6s. That is the correct
+trade for one GPU and one resident model: correctness over throughput. `tts_status`
+deliberately takes no lock and stays instant even mid-queue.
+
+**The concurrency bug this surface would have had.** The engine was written for
+stdio, where the transport serialises one client's calls, so `load()` was an
+unlocked check-then-act over a process-global model cache. Under HTTP that is a
+live race: two threads both miss the cache check and both call
+`from_pretrained()` — 4 copies of turbo's weights on a 12 GB card that the VRAM
+preflight had already cleared — and a request for a different model could
+`gc.collect()` + `torch.cuda.empty_cache()` while another request was still
+generating. `load()`, `unload()` and `synthesize()` are now serialised behind a
+re-entrant lock, and `tests/test_concurrency.py` fails if that lock is removed.
+
+**Treat it as single-operator.** It is fine for a local dashboard, a second
+harness on the same box, or testing. It is not an authenticated service.
+
 ## Configuration
 
 All settings are environment variables, read at startup. No secrets.
@@ -286,6 +339,15 @@ using another would be worse than failing.
 multilingual model do not both fit on a 12 GB card that already has an LLM
 resident. Asking for a different model evicts the previous one and empties the
 CUDA allocator cache.
+
+**The engine is locked; the status reads are not.** `load()`, `unload()` and
+`synthesize()` serialise behind one re-entrant lock, because the model cache is
+process-global and a single model instance is not safe to call `generate()` on
+from two threads. `tts_status`, `gpu_report` and `free_vram_mb()` deliberately
+take no lock, so a ten-second cold weight load never stalls a diagnostic call —
+which is the call you need while staring at a slow first request. The lock is
+invisible over stdio and is the difference between working and OOM-ing over
+HTTP; the reasoning and the measured numbers are in the web-surface section.
 
 **The device string goes straight to `from_pretrained()`.** Chatterbox's own
 `.to(device)` is incomplete upstream: in `ChatterboxTTS` and
