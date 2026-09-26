@@ -2,10 +2,22 @@
 
 from __future__ import annotations
 
+import wave
+
 import pytest
 
 from mcp_agent_chatterbox.errors import ToolFault
-from mcp_agent_chatterbox.voices import list_voices, resolve_voice
+from mcp_agent_chatterbox.voices import SHORT_CLIP_S, list_voices, resolve_voice
+
+
+def _write_wav(path, seconds, rate=24000, channels=1):
+    """A real, decodable WAV header -- _probe reads container metadata."""
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\0\0" * int(rate * channels * seconds))
+    return path
 
 
 @pytest.fixture
@@ -34,6 +46,49 @@ class TestListVoices:
     def test_reports_size(self, voices):
         entry = next(v for v in list_voices(voices) if v["name"] == "seven")
         assert entry["size_kb"] == pytest.approx(0.1, abs=0.01)
+
+
+class TestClipMetadata:
+    """Duration is the property that predicted clone quality, so it is listed."""
+
+    def test_reports_duration_rate_channels(self, tmp_path):
+        d = tmp_path / "voices"
+        d.mkdir()
+        _write_wav(d / "long.wav", 40.1, rate=48000, channels=2)
+        entry = list_voices(d)[0]
+        assert entry["duration_s"] == pytest.approx(40.1, abs=0.01)
+        assert entry["sample_rate"] == 48000
+        assert entry["channels"] == 2
+
+    def test_unreadable_clip_degrades_to_nulls(self, voices):
+        # The fixture writes RIFF + noise, not a real header. Listing must still
+        # succeed -- a clip we cannot probe may still be usable.
+        entry = next(v for v in list_voices(voices) if v["name"] == "seven")
+        assert entry["duration_s"] is None
+        assert entry["sample_rate"] is None
+        assert "quality_note" not in entry
+
+    def test_short_clip_is_flagged(self, tmp_path):
+        d = tmp_path / "voices"
+        d.mkdir()
+        _write_wav(d / "brief.wav", SHORT_CLIP_S - 5)
+        entry = list_voices(d)[0]
+        assert "quality_note" in entry
+        assert "crackle" in entry["quality_note"]
+
+    def test_long_clip_is_not_flagged(self, tmp_path):
+        # The 40.1s reference that measurably beat an 11.8s excerpt must not
+        # be warned about.
+        d = tmp_path / "voices"
+        d.mkdir()
+        _write_wav(d / "seven.wav", 40.1, rate=48000, channels=2)
+        assert "quality_note" not in list_voices(d)[0]
+
+    def test_unknown_duration_is_never_flagged(self, tmp_path):
+        d = tmp_path / "voices"
+        d.mkdir()
+        (d / "opaque.wav").write_bytes(b"RIFF" + b"\0" * 64)
+        assert "quality_note" not in list_voices(d)[0]
 
 
 class TestResolveVoice:

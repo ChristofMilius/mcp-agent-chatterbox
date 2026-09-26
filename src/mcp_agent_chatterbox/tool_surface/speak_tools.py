@@ -55,7 +55,14 @@ def register(server, ctx) -> None:
         voice:   name of a reference clip in the voices directory (its filename
                  without extension). Required for multilingual/original.
         reference_clip: path to a wav/mp3/flac clip, as an alternative to voice=.
-                 For best cloning quality use 5-15 s of clean speech.
+                 Supply as much clean continuous speech as you have. Short
+                 references measurably increase fine clicks and crackle: a 40 s
+                 reference beat an 11.8 s excerpt of the same recording by a
+                 wide margin, several times the model's own run-to-run variance.
+                 Under ~5 s is genuinely too little. Do not normalise or limit
+                 the clip -- that shifts output level and adds artefacts. A
+                 mastered or compressed recording is fine. Sample rate and
+                 channel count need not match anything.
         language: ISO 639-1 code, multilingual only (e.g. "de", "en", "fr").
         t3_model: "v2" (default) or "v3" — multilingual checkpoint.
         exaggeration/cfg_weight/temperature: style controls. Left unset, each

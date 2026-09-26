@@ -215,9 +215,8 @@ Cuts off playback started with `wait=false`.
 
 ## Voice cloning
 
-Put reference clips in `voices/` (create it; it is not tracked by git). For
-best results use **5-15 seconds** of clean single-speaker audio — no music, no
-background noise, no second voice. Then refer to a clip by its filename stem:
+Put reference clips in `voices/` (create it; it is not tracked by git). Then
+refer to a clip by its filename stem:
 
 ```
 voices/seven.wav   →   speak(text, voice="seven")
@@ -225,6 +224,59 @@ voices/seven.wav   →   speak(text, voice="seven")
 
 Names resolve case-insensitively, and a unique prefix works (`voice="sev"`).
 An ambiguous prefix returns the candidates rather than picking one.
+
+### How much reference audio to use
+
+**Give it as much clean single-speaker speech as you have.** Do not trim a good
+recording down to a short excerpt.
+
+This tool's own documentation used to say "5-15 seconds". That is wrong, and it
+was wrong in the direction that costs quality, so it was replaced with what an
+A/B test actually found. Comparing a 40.1 s reference against an 11.8 s excerpt
+of that same recording — five texts per arm, plus a same-reference re-render
+arm as the noise floor — gave this for impulsive discontinuities per second
+(adaptive Laplacian impulse detector):
+
+| Threshold | 40.1 s reference | 11.8 s excerpt | noise floor |
+| --------- | --------------- | -------------- | ----------- |
+| k=6 fine      | **283.6** | 459.0 | 5.1 |
+| k=10 moderate | **108.8** | 173.6 | 7.7 |
+| k=20 large    | **72.5**  | 80.1  | 5.2 |
+
+The short reference produced ~36 % more moderate and ~44 % more fine impulses,
+several times the model's own sampling variance, and the effect survived
+controlling for gain. Worst-spike magnitude, HF energy and zero-crossing
+irregularity were indistinguishable, so what degrades is fine crackle rather
+than loud pops. The failure mode is too *little* audio, not too much.
+
+We did not test 20 s, 60 s or longer, so this does not establish an optimum —
+only that truncating a good recording to "5-15 s" measurably degrades it.
+Under about 5 s is genuinely too little.
+
+Three more things that measurement contradicted:
+
+- **A processed or mastered source is fine.** The 40 s reference above was an
+  Audacity-mastered file and was the better of the two. Compression is not the
+  problem; shortness is.
+- **Do not normalise, gain-match or limit the reference.** Applying +23 dB of
+  peak normalisation to the excerpt moved rendered output level by 12.1 dB
+  (RMS −23.1 vs −35.2 dBFS, against a 0.35 dB level noise floor), and the hotter
+  output was measurably grainier. Leave the source level alone.
+- **Sample rate and channel count need not match anything.** The 40 s reference
+  was 48 kHz stereo and needed no preparation; Chatterbox resamples and
+  downmixes internally.
+
+What you still control: no music, no background noise, no second speaker, and
+prefer continuous speech over silence-padded audio.
+
+Caveat on all of the above: n=5 per arm on a single speaker, and the detector
+measures discontinuities, not timbre, prosody or speaker similarity. It
+quantifies one artefact class, not overall quality — your own listening is
+still the arbiter.
+
+`list_voices` reports each clip's duration, sample rate and channel count, and
+flags clips short enough to be worth warning about, precisely because duration
+is what predicted quality here.
 
 ## CLI
 

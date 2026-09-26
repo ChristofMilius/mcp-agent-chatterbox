@@ -28,10 +28,15 @@ def register(server, ctx) -> None:
         """
         List the reference clips available for voice cloning — the files in the
         voices directory. Returns each clip's name (what you pass as voice=),
-        filename and size, plus which models can use it. The multilingual and
-        original models require one of these; turbo does not.
+        filename, size, duration, sample rate and channel count, plus which
+        models can use it. The multilingual and original models require one of
+        these; turbo does not.
 
-        For good cloning use 5-15 seconds of clean single-speaker audio.
+        For good cloning use as much clean single-speaker audio as you have, not
+        a short excerpt — clipping a good recording down measurably adds fine
+        clicks and crackle. A mastered or compressed source is fine; do not
+        normalise it. Sample rate and channel count need not match anything.
+        Clips too short to be safe carry a quality_note.
         """
         try:
             voices = _scan_voices(voices_dir)
