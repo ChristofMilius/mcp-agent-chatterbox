@@ -10,6 +10,7 @@ branch, so a CUDA-capable box reported device "cpu" and free_vram_mb null.
 from __future__ import annotations
 
 import logging
+import os
 
 import numpy as np
 import pytest
@@ -17,7 +18,7 @@ import torch
 
 from mcp_agent_chatterbox import engine as engine_module
 from mcp_agent_chatterbox.config import Config
-from mcp_agent_chatterbox.engine import ChatterboxEngine, _harden_reference_dtype
+from mcp_agent_chatterbox.engine import ChatterboxEngine, _apply_hf_home, _harden_reference_dtype
 from mcp_agent_chatterbox.errors import ToolFault
 from mcp_agent_chatterbox.registry import (
     MODEL_SPECS,
@@ -205,6 +206,25 @@ class TestStatus:
         monkeypatch.setattr("mcp_agent_chatterbox.engine._has_wheel", lambda _n: True)
         st = engine_with(monkeypatch).status()
         assert st["device"] == "cuda:0"
+
+
+class TestApplyHfHome:
+    def test_empty_home_leaves_environment_untouched(self, monkeypatch):
+        monkeypatch.delenv("HF_HOME", raising=False)
+        _apply_hf_home(None)
+        assert "HF_HOME" not in os.environ
+
+    def test_sets_hf_home_from_configured_path(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HF_HOME", raising=False)
+        target = tmp_path / "hf"
+        _apply_hf_home(target)
+        assert os.environ["HF_HOME"] == str(target)
+
+    def test_already_pointing_there_is_a_noop(self, monkeypatch, tmp_path):
+        target = tmp_path / "hf"
+        monkeypatch.setenv("HF_HOME", str(target))
+        _apply_hf_home(target)
+        assert os.environ["HF_HOME"] == str(target)
 
 
 class TestRegistry:  # noqa: N801 — the registry is imported into this test module

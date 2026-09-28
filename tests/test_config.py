@@ -23,6 +23,28 @@ class TestDefaults:
         assert c.max_chars == 4000
         assert c.max_chunk_chars == 500
         assert c.chunk_pause_ms == 250
+        assert c.hf_home is None
+
+
+class TestHfHome:
+    def test_defaults_to_none(self):
+        c = Config()
+        assert c.hf_home is None
+
+    def test_absolute_path_kept(self, monkeypatch, tmp_path):
+        target = tmp_path / "hf"
+        monkeypatch.setenv("CHATTERBOX_HF_HOME", str(target))
+        assert Config().hf_home == target
+
+    def test_relative_path_resolves_against_project_root(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("CHATTERBOX_HF_HOME", "hf_cache")
+        c = Config()
+        assert c.hf_home == (_BASE / "hf_cache").resolve()
+
+    def test_empty_value_is_none(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_HF_HOME", "   ")
+        assert Config().hf_home is None
 
 
 class TestPathResolution:

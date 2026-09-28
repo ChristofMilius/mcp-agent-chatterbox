@@ -29,9 +29,11 @@ import functools
 import gc
 import importlib.util
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, NoReturn, TypeVar, cast
 
 from mcp_agent_chatterbox.config import Config
@@ -59,6 +61,24 @@ def _load_torch():
     import torch  # noqa: PLC0415
 
     return torch
+
+
+def _apply_hf_home(hf_home: Path | None) -> None:
+    """Re-home Hugging Face's model cache to the configured path.
+
+    huggingface_hub seals HF_HOME when its constants module is imported,
+    which happens on the first chatterbox model-class import (load_model_class
+    in registry.py). Setting it any later has no effect, so load() calls this
+    before the import. A caller-supplied HF_HOME in the environment is left
+    alone when it already points at the configured home.
+    """
+    if not hf_home:
+        return
+    target = str(hf_home)
+    if os.environ.get("HF_HOME") == target:
+        return
+    os.environ["HF_HOME"] = target
+    logger.info("[engine] huggingface model cache re-homed to %s (HF_HOME)", target)
 
 
 def _harden_reference_dtype(method):
@@ -374,6 +394,7 @@ class ChatterboxEngine:
 
         self._evict_others(key)
 
+        _apply_hf_home(self.cfg.hf_home)
         model_cls = load_model_class(spec)
         logger.info(
             "[engine] loading %s on %s (first use; weights download once, then cached on disk)",

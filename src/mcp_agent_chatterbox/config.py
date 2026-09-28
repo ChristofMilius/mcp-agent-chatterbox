@@ -95,6 +95,12 @@ class Config:
         self.voices_dir: Path = _resolve_path(os.getenv("CHATTERBOX_VOICES_DIR", "voices"))
         self.logs_dir: Path = _resolve_path(os.getenv("CHATTERBOX_LOGS_DIR", "logs"))
 
+        #: Set the Hugging Face cache root (HF_HOME). Empty or unset leaves
+        #: HF's own default untouched. Relative values resolve against the
+        #: project root.
+        raw_hf_home = os.getenv("CHATTERBOX_HF_HOME", "").strip()
+        self.hf_home: Path | None = _resolve_path(raw_hf_home) if raw_hf_home else None
+
         #: Default model key when a speak() call does not name one.
         self.model: str = os.getenv("CHATTERBOX_MODEL", "turbo").strip().lower()
 
@@ -135,6 +141,7 @@ class Config:
             f"output_dir={self.output_dir!r}, "
             f"voices_dir={self.voices_dir!r}, "
             f"logs_dir={self.logs_dir!r}, "
+            f"hf_home={self.hf_home!r}, "
             f"model={self.model!r}, "
             f"device={self.device!r}, "
             f"gpu_index={self.gpu_index!r}, "

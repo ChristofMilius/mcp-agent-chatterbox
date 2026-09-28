@@ -421,7 +421,7 @@ All settings are environment variables, read at startup. No secrets.
 | `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence inserted between concatenated chunks |
 | `CHATTERBOX_VRAM_MB` | `4096` | Free-VRAM floor for a load attempt |
 | `CHATTERBOX_STRICT_VRAM` | `0` | `1` refuses a load below the floor instead of warning |
-| `HF_HOME` | — | Override the Hugging Face cache location |
+| `CHATTERBOX_HF_HOME` | unset | Home for the Hugging Face cache (sets `HF_HOME` before the model loads). Handy when the weights live on a big drive or a path the default `~/.cache/huggingface` cannot cover |
 
 Relative paths resolve against the project root, never the process CWD, since
 MCP harnesses spawn servers with an unpredictable working directory.
