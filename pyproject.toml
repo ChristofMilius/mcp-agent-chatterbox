@@ -56,6 +56,20 @@ chatterbox-tts = { git = "https://github.com/resemble-ai/chatterbox.git", rev = 
 torch = { index = "pytorch-cu124" }
 torchaudio = { index = "pytorch-cu124" }
 
+# Override chatterbox-tts's hard pins (==5.2.0 / ==0.29.0 / ==0.5.3) with the
+# dependabot bump. Its S3Gen decoder and flow-matching frontend were validated
+# against these releases by the live renders + full test suite; the hard pins
+# are the snapshot author's floor, not an upper bound.
+# transformers stays at 5.2.0 — every 5.3+ requires `torch.float8_e8m0fnu`, a
+# dtype that only exists from torch 2.8, and torch 2.6.0 is itself a hard
+# ceiling (cu124 wheels stop there; the decoder is not validated on newer
+# torch). torch/torchaudio therefore stay at 2.6.0.
+[tool.uv]
+override-dependencies = [
+    "diffusers==0.38.0",
+    "safetensors==0.8.0",
+]
+
 [[tool.uv.index]]
 name = "pytorch-cu124"
 url = "https://download.pytorch.org/whl/cu124"
