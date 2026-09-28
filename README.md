@@ -338,7 +338,7 @@ uv run mcp-agent-chatterbox doctor
 
 # synthesize without going through MCP
 uv run mcp-agent-chatterbox speak "Build finished." --model turbo
-uv run mcp-agent-chatterbox speak "Guten Morgen." --model multilingual --voice seven --language de
+uv run mcp-agent-chatterbox speak "Guten Morgen." --model multilingual --voice <your-clip-name> --language de
 uv run mcp-agent-chatterbox speak "..." --no-play --wait
 
 # run the server directly
