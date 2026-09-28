@@ -66,47 +66,62 @@ uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available
 
 Expect `2.14.0+cu132 True`.
 
-### Why `setuptools<81` is pinned
+### Why `setuptools` is floored, not capped
 
-This is the one dependency in `pyproject.toml` that looks arbitrary, so here is
-the whole story.
+`pyproject.toml` requires `setuptools>=83.0.0`. That floor exists to clear
+GHSA-h35f-9h28-mq5c, which is fixed in 83.0.0. It is a floor, never a cap, so
+uv picks the patched release and cannot regress below it.
 
-The **turbo** model embeds a copy of [Perth](https://github.com/resemble-ai/perth),
-Resemble AI's audio watermarking library. In the PyPI wheel that copy is vendored
-inside the `chatterbox-tts` sdist — it ships as loose files with no package
-metadata. With the git snapshot (see the next section) it instead resolves as a
-proper `resemble-perth` git dependency; either way the code path is the same
-`perth_net` package using `pkg_resources`.
+An earlier revision carried a hard `setuptools<81` cap here, justified by a
+story that turned out to be **wrong**. It is recorded because the symptom is
+still real and the wrong fix is a trap:
 
-`perth/perth_net/__init__.py` starts with:
-
-```python
-from pkg_resources import resource_filename
-```
-
-`pkg_resources` was part of setuptools until setuptools 81 dropped it. So on a
-current setuptools the import raises `ImportError`, which `perth/__init__.py`
-swallows and turns into `PerthImplicitWatermarker = None` — and
-`ChatterboxTurboTTS.__init__` then calls that `None`:
+The **turbo** model embeds [Perth](https://github.com/resemble-ai/perth),
+Resemble AI's audio watermarking library, and calls it at load time. When Perth
+fails to import, `perth/__init__.py` swallows the `ImportError` and sets
+`PerthImplicitWatermarker = None` — the failure is silent by design upstream —
+and `ChatterboxTurboTTS.__init__` then calls that `None`:
 
 ```
 TypeError: 'NoneType' object is not callable
 ```
 
-The failure is silent by design upstream (the `try/except ImportError` is
-intentional, so Perth works without the neural watermarker), which is exactly
-why it surfaces as a confusing `TypeError` at load time rather than a clear
-message. Pinning `setuptools<81` restores `pkg_resources` and the turbo model
-loads.
+The cap was added because the visible `ImportError` was believed to be
+`from pkg_resources import resource_filename`, which setuptools 81 dropped.
+It was not. Two independent findings:
+
+- **`perth` 1.1.0 never imports `pkg_resources` at all.** The resolved git
+  dependency carries a real package with real metadata and uses `importlib`,
+  not the loose vendored copy described in the old note.
+- **The actual `ImportError` was a librosa one:**
+  `cannot import name 'resample' from 'librosa'`. It surfaced through
+  `perth_watermarker.py`'s `from librosa import resample`, which is a red
+  herring — librosa itself was broken. librosa lazily loads `resample` from
+  `librosa.core.spectrum`, which imports numba; numba imports
+  `numba.misc.coverage_support`, which subclasses `coverage.types.Tracer`; and
+  a **half-deleted `coverage` install** made that fail with
+  `AttributeError: module 'coverage' has no attribute 'types'`. lazy_loader
+  swallowed the resulting chain, leaving `librosa.resample` simply *unbound* —
+  so `import librosa` still succeeded, and the breakage only appeared later,
+  inside an unrelated package's `from librosa import resample`.
+
+The `coverage` install was damaged by a `uv sync` that was killed midway
+because the running MCP server held `coverage/tracer.pyd` open, leaving
+`coverage/__init__.py` deleted while `types.py` survived. So the cap was
+fixing nothing: it merely rode along with the resolution that removed the
+corruption. Verified on setuptools 84.0.0 with `pkg_resources` gone entirely —
+`perth.PerthImplicitWatermarker` imports as a real class and turbo renders.
 
 Consequences worth knowing:
 
-- The pin is a **runtime** requirement, not a build-time one. The dependency
-  graph still works without it; turbo just fails to load.
-- Only the **turbo** model is affected. `multilingual` and `original` never
-  touch Perth and load fine on any setuptools.
-- If a future `chatterbox-tts` release fixes the vendored import, drop the pin.
-  The symptom to watch for is the `TypeError` above returning.
+- **A clean `coverage` install is what actually matters.** The tell is
+  `coverage.__file__` being `None` (namespace-package shell). If turbo ever
+  throws that `TypeError` again, run `uv sync` to completion and check
+  `coverage/__init__.py` exists before suspecting a dependency.
+- **Only turbo is affected.** `multilingual`, `original`, and `nano` never
+  touch Perth.
+- Never restore a `setuptools<81` cap. It cannot fix this failure, and it
+  reintroduces a known advisory.
 
 ### Why `chatterbox-tts` comes from a git snapshot
 

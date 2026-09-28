@@ -23,7 +23,21 @@ dependencies = [
     # reference-clip path and the full test suite were re-validated onboard.
     "torch==2.14.0",
     "torchaudio==2.11.0",
-    "setuptools<81",
+    # Lower bound, not the old "setuptools<81" cap. That cap was the sole reason
+    # we sat on 80.10.2 and carried GHSA-h35f-9h28-mq5c (fixed in 83.0.0): we
+    # were holding ourselves below the fix. A floor lets uv pick the patched
+    # release and never regresses below it.
+    #
+    # The cap itself was a misdiagnosis, kept here as a warning. It was added
+    # because perth's watermarker import raised ImportError, blamed on
+    # setuptools 81 dropping pkg_resources, and fixed by capping. But perth
+    # 1.1.0 never imports pkg_resources -- the real ImportError was
+    # "cannot import name 'resample' from 'librosa'", caused by a half-deleted
+    # coverage install breaking numba, which broke librosa, which left
+    # perth.PerthImplicitWatermarker = None. The cap never fixed that. It only
+    # coincidentally rode along with the resolution that did. Do not restore
+    # it; see the README section on what actually goes wrong.
+    "setuptools>=83.0.0",
 ]
 
 [project.scripts]
@@ -70,6 +84,19 @@ override-dependencies = [
     "transformers==5.10.4",
     "diffusers==0.38.0",
     "safetensors==0.8.0",
+    # gradio==6.8.0 is the snapshot's own hard pin. It is also the sole reason
+    # starlette could not leave 0.52.x: gradio 6.8.0 requires starlette<1.0, and
+    # the two advisories are only fixable together (starlette needs >=1.3.1,
+    # gradio >=6.15.1). Neither package is imported anywhere in src/ or tests/ --
+    # gradio is a demo-UI dependency we never load, and starlette serves the
+    # ASGI path of mcp, which we use over stdio. Override, rather than
+    # constraint-dependencies: a constraint cannot relax a hard "==" pin, and
+    # overriding is the same lever already used for the torch pins above.
+    "gradio>=6.15.1",
+]
+
+constraint-dependencies = [
+    "starlette>=1.3.1",
 ]
 
 [[tool.uv.index]]
