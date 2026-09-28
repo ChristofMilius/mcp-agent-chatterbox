@@ -23,7 +23,7 @@ dependencies = [
     # reference-clip path and the full test suite were re-validated onboard.
     "torch==2.14.0",
     "torchaudio==2.11.0",
-    "setuptools<81",
+    "setuptools<84",
 ]
 
 [project.scripts]
