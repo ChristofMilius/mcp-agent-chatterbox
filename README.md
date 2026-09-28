@@ -271,7 +271,7 @@ Put reference clips in `voices/` (create it; it is not tracked by git). Then
 refer to a clip by its filename stem:
 
 ```
-voices/seven.wav   →   speak(text, voice="seven")
+voices/<your-clip-name>.wav   →   speak(text, voice="<your-clip-name>")
 ```
 
 Names resolve case-insensitively, and a unique prefix works (`voice="sev"`).
