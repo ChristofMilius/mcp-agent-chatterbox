@@ -9,7 +9,10 @@ branch, so a CUDA-capable box reported device "cpu" and free_vram_mb null.
 
 from __future__ import annotations
 
+import logging
+
 import pytest
+import torch
 
 from mcp_agent_chatterbox.config import Config
 from mcp_agent_chatterbox.engine import ChatterboxEngine
@@ -249,3 +252,142 @@ class TestRegistry:  # noqa: N801 — the registry is imported into this test mo
         assert MODEL_SPECS["turbo"].defaults["cfg_weight"] == 0.0
         assert MODEL_SPECS["multilingual"].defaults["cfg_weight"] == 0.5
         assert MODEL_SPECS["original"].defaults["cfg_weight"] == 0.5
+
+    def test_tunable_lists_only_honored_knobs(self):
+        # turbo accepts min_p/exaggeration/cfg_weight in its signature but
+        # ignores them, so tuning must not advertise them.
+        turbo = next(m for m in describe_models() if m["key"] == "turbo")
+        assert "top_k" in turbo["tunable"]
+        assert "norm_loudness" in turbo["tunable"]
+        assert "temperature" in turbo["tunable"]
+        assert "min_p" not in turbo["tunable"]
+        assert "exaggeration" not in turbo["tunable"]
+        assert "cfg_weight" not in turbo["tunable"]
+
+    def test_500m_tunable_excludes_turbo_only_knobs(self):
+        multi = next(m for m in describe_models() if m["key"] == "multilingual")
+        assert "min_p" in multi["tunable"]
+        assert "exaggeration" in multi["tunable"]
+        assert "cfg_weight" in multi["tunable"]
+        assert "top_k" not in multi["tunable"]
+        assert "norm_loudness" not in multi["tunable"]
+
+    def test_multilingual_repetition_penalty_default_is_2_0(self):
+        # mtl_tts.generate() defaults to 2.0; the registry documents it.
+        assert MODEL_SPECS["multilingual"].defaults["repetition_penalty"] == 2.0
+
+
+class FakeModel:
+    """Stands in for a chatterbox model: records generate() kwargs."""
+
+    sr = 24000
+
+    def __init__(self):
+        self.renders: list[tuple[str, dict]] = []
+
+    def generate(self, text: str, **kwargs):
+        self.renders.append((text, kwargs))
+        return torch.zeros(1, 2400)
+
+
+class TestSynthesize:
+    """synthesize()'s knob handling, with load() stubbed so no weights load."""
+
+    @pytest.fixture
+    def fake_model(self):
+        return FakeModel()
+
+    def _engine(self, monkeypatch, spec_name, fake_model):
+        engine = ChatterboxEngine(Config())
+        spec = get_spec(spec_name)
+        monkeypatch.setattr(
+            engine, "load", lambda model_key, t3_model=None: (fake_model, "cpu", spec)
+        )
+        return engine
+
+    def test_forwards_turbo_honored_knobs(self, monkeypatch, fake_model):
+        e = self._engine(monkeypatch, "turbo", fake_model)
+        e.synthesize(
+            "hi",
+            "turbo",
+            top_k=500,
+            norm_loudness=False,
+            top_p=0.9,
+            repetition_penalty=1.5,
+            temperature=0.7,
+        )
+        _text, kwargs = fake_model.renders[0]
+        assert kwargs["top_k"] == 500
+        assert kwargs["norm_loudness"] is False
+        assert kwargs["top_p"] == 0.9
+        assert kwargs["repetition_penalty"] == 1.5
+        assert kwargs["temperature"] == 0.7
+
+    def test_drops_unhonored_turbo_knobs_with_warning(self, monkeypatch, fake_model, caplog):
+        e = self._engine(monkeypatch, "turbo", fake_model)
+        with caplog.at_level(logging.WARNING, logger="mcp_agent_chatterbox.engine"):
+            e.synthesize("hi", "turbo", exaggeration=0.4, cfg_weight=0.7, min_p=0.1)
+        _text, kwargs = fake_model.renders[0]
+        assert "exaggeration" not in kwargs
+        assert "cfg_weight" not in kwargs
+        assert "min_p" not in kwargs
+        assert "exaggeration" in caplog.text
+
+    def test_drops_top_k_and_norm_loudness_for_500m(self, monkeypatch, fake_model, caplog):
+        e = self._engine(monkeypatch, "multilingual", fake_model)
+        with caplog.at_level(logging.WARNING, logger="mcp_agent_chatterbox.engine"):
+            e.synthesize(
+                "hi",
+                "multilingual",
+                reference_clip="clip.wav",
+                top_k=500,
+                norm_loudness=False,
+                top_p=0.9,
+                repetition_penalty=1.5,
+            )
+        _text, kwargs = fake_model.renders[0]
+        assert "top_k" not in kwargs
+        assert "norm_loudness" not in kwargs
+        assert kwargs["top_p"] == 0.9
+        assert kwargs["repetition_penalty"] == 1.5
+
+    def test_min_p_forwarded_for_500m(self, monkeypatch, fake_model):
+        e = self._engine(monkeypatch, "multilingual", fake_model)
+        e.synthesize("hi", "multilingual", reference_clip="clip.wav", min_p=0.1)
+        _text, kwargs = fake_model.renders[0]
+        assert kwargs["min_p"] == 0.1
+
+    def test_unset_knobs_reach_generate_as_nothing(self, monkeypatch, fake_model):
+        e = self._engine(monkeypatch, "turbo", fake_model)
+        e.synthesize("hi", "turbo")
+        _text, kwargs = fake_model.renders[0]
+        assert kwargs == {}
+
+    def test_seed_seeds_torch_on_cpu_and_cuda(self, monkeypatch, fake_model, fake_torch):
+        torch_fake = fake_torch(available=True, count=1, free_mb=[8000])
+        e = self._engine(monkeypatch, "turbo", fake_model)
+        e.synthesize("hi", "turbo", seed=42)
+        assert torch_fake.manual_seed_calls == [42]
+        assert torch_fake.cuda.manual_seed_all_calls == [42]
+
+    def test_zero_seed_means_random(self, monkeypatch, fake_model, fake_torch):
+        # Upstream Gradio apps use 0 for "random"; it must not seed.
+        torch_fake = fake_torch(available=True, count=1, free_mb=[8000])
+        e = self._engine(monkeypatch, "turbo", fake_model)
+        e.synthesize("hi", "turbo", seed=0)
+        assert torch_fake.manual_seed_calls == []
+        assert torch_fake.cuda.manual_seed_all_calls == []
+
+    def test_no_seed_no_seeding(self, monkeypatch, fake_model, fake_torch):
+        torch_fake = fake_torch(available=True, count=1, free_mb=[8000])
+        e = self._engine(monkeypatch, "turbo", fake_model)
+        e.synthesize("hi", "turbo")
+        assert torch_fake.manual_seed_calls == []
+        assert torch_fake.cuda.manual_seed_all_calls == []
+
+    def test_returns_wav_and_metadata(self, monkeypatch, fake_model):
+        e = self._engine(monkeypatch, "turbo", fake_model)
+        result = e.synthesize("hi", "turbo")
+        assert result["model"] == "turbo"
+        assert result["chars"] == 2
+        assert result["wav"].shape == (1, 2400)

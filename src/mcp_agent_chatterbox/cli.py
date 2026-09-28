@@ -57,6 +57,8 @@ def _cmd_doctor(args) -> int:
     print(f"    vram floor   : {cfg.vram_floor_mb} MiB (strict={cfg.strict_vram})")
     print(f"    autoplay     : {cfg.autoplay} (player available: {player_available()})")
     print(f"    max chars    : {cfg.max_chars}")
+    print(f"    chunk size   : {cfg.max_chunk_chars} chars")
+    print(f"    chunk pause  : {cfg.chunk_pause_ms} ms")
 
     engine = ChatterboxEngine(cfg)
     status = engine.status()
@@ -121,6 +123,14 @@ def _cmd_speak(args) -> int:
             reference_clip=args.reference_clip,
             language=args.language,
             t3_model=args.t3_model,
+            exaggeration=args.exaggeration,
+            cfg_weight=args.cfg_weight,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            repetition_penalty=args.repetition_penalty,
+            norm_loudness=False if args.no_norm_loudness else None,
+            seed=args.seed,
             play_audio=not args.no_play,
             wait=args.wait,
         )
@@ -133,6 +143,22 @@ def _cmd_speak(args) -> int:
 
     print(f"Wrote   : {result['path']}")
     print(f"Model   : {result['model']} on {result['device']}")
+    knobs = {
+        k: v
+        for k, v in {
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "top_k": args.top_k,
+            "repetition_penalty": args.repetition_penalty,
+            "norm_loudness": False if args.no_norm_loudness else None,
+            "seed": args.seed,
+            "exaggeration": args.exaggeration,
+            "cfg_weight": args.cfg_weight,
+        }.items()
+        if v is not None
+    }
+    if knobs:
+        print("Knobs   : " + ", ".join(f"{k}={v}" for k, v in knobs.items()))
     print(
         f"Duration: {result['duration_s']}s @ {result['sample_rate']} Hz "
         f"(synthesis {result['synthesis_s']}s)"
@@ -171,6 +197,35 @@ def build_parser() -> argparse.ArgumentParser:
     p_speak.add_argument("--reference-clip", default=None, help="Path to a reference clip.")
     p_speak.add_argument("--language", default=None, help="ISO 639-1 code (multilingual only).")
     p_speak.add_argument("--t3-model", default=None, help="v2 | v3 (multilingual only).")
+    p_speak.add_argument(
+        "--temperature", type=float, default=None, help="Sampling temperature (0.05-2.0)."
+    )
+    p_speak.add_argument(
+        "--exaggeration", type=float, default=None, help="Style control (500M models only)."
+    )
+    p_speak.add_argument(
+        "--cfg-weight", type=float, default=None, help="CFG guidance weight (500M models only)."
+    )
+    p_speak.add_argument(
+        "--top-p", type=float, default=None, help="Nucleus-sampling cutoff (0.0-1.0)."
+    )
+    p_speak.add_argument(
+        "--top-k", type=int, default=None, help="Top-k sampling size (0-1000, turbo only)."
+    )
+    p_speak.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=None,
+        help="Penalise repeated tokens (1.0-2.0).",
+    )
+    p_speak.add_argument(
+        "--no-norm-loudness",
+        action="store_true",
+        help="Do not normalize output to -27 LUFS (turbo only).",
+    )
+    p_speak.add_argument(
+        "--seed", type=int, default=None, help="Seed torch (reproducible re-render within a session)."
+    )
     p_speak.add_argument("--no-play", action="store_true", help="Only write the WAV.")
     p_speak.add_argument("--wait", action="store_true", help="Block until playback finishes.")
     p_speak.set_defaults(func=_cmd_speak)

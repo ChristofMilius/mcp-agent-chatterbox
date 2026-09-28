@@ -118,6 +118,17 @@ class Config:
         #: will take minutes and blow the context window of whoever is waiting.
         self.max_chars: int = _env_int("CHATTERBOX_MAX_CHARS", 4000)
 
+        #: Longest text a single generate() call is asked to render. Chatterbox
+        #: truncates large inputs (turbo degrades past roughly 600 chars and
+        #: comes back shorter than a shorter prompt), so text longer than this
+        #: is sentence-split into per-chunk renders and concatenated into one
+        #: WAV.
+        self.max_chunk_chars: int = _env_int("CHATTERBOX_MAX_CHUNK_CHARS", 500)
+
+        #: Silence in ms inserted between concatenated chunks, so sentence
+        #: boundaries do not run directly into one another.
+        self.chunk_pause_ms: int = _env_int("CHATTERBOX_CHUNK_PAUSE_MS", 250)
+
     def __repr__(self) -> str:
         return (
             f"Config("
@@ -131,6 +142,8 @@ class Config:
             f"strict_vram={self.strict_vram!r}, "
             f"autoplay={self.autoplay!r}, "
             f"max_chars={self.max_chars!r}, "
+            f"max_chunk_chars={self.max_chunk_chars!r}, "
+            f"chunk_pause_ms={self.chunk_pause_ms!r}, "
             f")"
         )
 

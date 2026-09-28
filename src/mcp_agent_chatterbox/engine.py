@@ -447,6 +447,9 @@ class ChatterboxEngine:
         repetition_penalty: float | None = None,
         min_p: float | None = None,
         top_p: float | None = None,
+        top_k: int | None = None,
+        norm_loudness: bool | None = None,
+        seed: int | None = None,
     ) -> dict:
         """
         Render `text` to a waveform and return it with metadata.
@@ -455,6 +458,18 @@ class ChatterboxEngine:
         rather than to this function's signature, because the three Chatterbox
         models are tuned differently and a single set of numbers would degrade
         two of them.
+
+        Any caller-set knob outside `spec.honored_knobs` is dropped with a
+        warning instead of reaching generate(): turbo ignores min_p, exaggeration
+        and cfg_weight, and the 500M models have no top_k/norm_loudness parameter
+        at all — forwarding them would TypeError or do nothing. `seed` reseeds
+        torch (CPU + CUDA) so a render is reproducible within a resident
+        session (the same text + seed then renders byte-identical audio);
+        0 (the upstream Gradio apps' convention) or None keeps random sampling.
+        Signed reproducibility across processes is not guaranteed: Chatterbox
+        does not enable torch's deterministic algorithms, so a fresh process
+        may pick different CUDA fast-path kernels and drift in low bits — the
+        upstream apps' seed has the same limitation.
         """
         model, device, spec = self.load(model_key, t3_model=t3_model)
 
@@ -478,8 +493,23 @@ class ChatterboxEngine:
             "repetition_penalty": repetition_penalty,
             "min_p": min_p,
             "top_p": top_p,
+            "top_k": top_k,
+            "norm_loudness": norm_loudness,
         }
-        kwargs: dict[str, Any] = {k: v for k, v in overrides.items() if v is not None}
+        set_but_unhonored = sorted(
+            k for k, v in overrides.items() if v is not None and k not in spec.honored_knobs
+        )
+        if set_but_unhonored:
+            logger.warning(
+                "[engine] %s does not support %s — ignoring",
+                spec.key,
+                ", ".join(set_but_unhonored),
+            )
+        kwargs: dict[str, Any] = {
+            k: v
+            for k, v in overrides.items()
+            if v is not None and k in spec.honored_knobs
+        }
         if reference_clip:
             kwargs["audio_prompt_path"] = reference_clip
         if language:
@@ -492,6 +522,12 @@ class ChatterboxEngine:
             device,
             sorted(kwargs),
         )
+        if seed is not None and seed != 0:
+            torch = _load_torch()
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            logger.info("[engine] seed=%d set for reproducible render", seed)
         started = time.perf_counter()
         try:
             wav = model.generate(text, **kwargs)

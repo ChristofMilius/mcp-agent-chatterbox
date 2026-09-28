@@ -40,6 +40,11 @@ def register(server, ctx) -> None:
         exaggeration: float | None = None,
         cfg_weight: float | None = None,
         temperature: float | None = None,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        repetition_penalty: float | None = None,
+        norm_loudness: bool | None = None,
+        seed: int | None = None,
         play_audio: bool | None = None,
         wait: bool = False,
         filename: str | None = None,
@@ -65,9 +70,27 @@ def register(server, ctx) -> None:
                  channel count need not match anything.
         language: ISO 639-1 code, multilingual only (e.g. "de", "en", "fr").
         t3_model: "v2" (default) or "v3" — multilingual checkpoint.
-        exaggeration/cfg_weight/temperature: style controls. Left unset, each
-                 model keeps its own tuned defaults (turbo runs cfg_weight 0.0,
-                 the 500M models 0.5).
+        temperature: sampling temperature (0.05-5.0). Honored by all models.
+        top_p: nucleus-sampling cutoff (0.0-1.0). Honored by all models.
+        top_k: top-k sampling size (0-1000). Honored by turbo only — the 500M
+                 models have no such parameter.
+        repetition_penalty: penalise repeated tokens (1.0-2.0). Honored by all
+                 models.
+        norm_loudness: normalize output to -27 LUFS. Honored by turbo only —
+                 the 500M models have no such parameter.
+        exaggeration/cfg_weight: style controls (0.0-2.0 / 0.0-1.0). Honored
+                 ONLY by the 500M models (multilingual/original); turbo ignores
+                 both, so setting them with model="turbo" is dropped with a
+                 warning, not an error. cfg_weight>0 doubles the text tokens
+                 for CFG guidance.
+        seed: reseed torch (CPU + CUDA) so re-renders are reproducible within
+                 the resident session; 0 (the upstream convention) or unset
+                 keeps random sampling. Byte-identical output across a server
+                 restart is not guaranteed — Chatterbox is nondeterministic
+                 across CUDA kernel choices.
+                 Left unset, every knob keeps the model's own tuned default
+                 (e.g. turbo runs cfg_weight 0.0 with top_k 1000; the 500M
+                 models run cfg_weight 0.5).
         play_audio: set false to only write the file. Defaults to the server
                  setting (on).
         wait: block until playback finishes instead of returning immediately.
@@ -91,6 +114,11 @@ def register(server, ctx) -> None:
                 exaggeration=exaggeration,
                 cfg_weight=cfg_weight,
                 temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                norm_loudness=norm_loudness,
+                seed=seed,
                 play_audio=play_audio,
                 wait=wait,
                 filename=filename,

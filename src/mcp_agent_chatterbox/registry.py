@@ -85,6 +85,14 @@ class ModelSpec:
     #: tool layer omits any kwarg the caller left unspecified so the library
     #: default applies.
     defaults: dict[str, Any] = field(default_factory=dict)
+    #: The subset of generate() kwargs that actually have an effect for this
+    #: model. The three signatures overlap but do not agree: turbo honors
+    #: top_k/norm_loudness but ignores min_p/exaggeration/cfg_weight, while the
+    #: 500M models honor min_p/exaggeration/cfg_weight and have no
+    #: top_k/norm_loudness parameter at all. The engine drops any caller-set
+    #: knob outside this set (with a warning) instead of letting it crash or
+    #: silently do nothing.
+    honored_knobs: frozenset[str] = frozenset()
     #: Extra note surfaced in tts_status / tool descriptions.
     note: str = ""
 
@@ -98,6 +106,9 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         params="350M",
         languages="English",
         stock_voice=True,
+        honored_knobs=frozenset(
+            {"repetition_penalty", "top_p", "top_k", "norm_loudness", "temperature"}
+        ),
         defaults={
             "repetition_penalty": 1.2,
             "min_p": 0.00,
@@ -122,8 +133,11 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         params="500M",
         languages="23 languages (incl. de, fr, es, zh)",
         stock_voice=False,
+        honored_knobs=frozenset(
+            {"repetition_penalty", "min_p", "top_p", "exaggeration", "cfg_weight", "temperature"}
+        ),
         defaults={
-            "repetition_penalty": 1.2,
+            "repetition_penalty": 2.0,
             "min_p": 0.05,
             "top_p": 1.0,
             "exaggeration": 0.5,
@@ -144,6 +158,9 @@ MODEL_SPECS: dict[str, ModelSpec] = {
         params="500M",
         languages="English",
         stock_voice=False,
+        honored_knobs=frozenset(
+            {"repetition_penalty", "min_p", "top_p", "exaggeration", "cfg_weight", "temperature"}
+        ),
         defaults={
             "repetition_penalty": 1.2,
             "min_p": 0.05,
@@ -199,7 +216,7 @@ def describe_models() -> list[dict]:
             "languages": s.languages,
             "stock_voice": s.stock_voice,
             "requires_reference_clip": not s.stock_voice,
-            "tunable": sorted(s.defaults),
+            "tunable": sorted(k for k in s.defaults if k in s.honored_knobs),
             "note": s.note,
         }
         for s in MODEL_SPECS.values()

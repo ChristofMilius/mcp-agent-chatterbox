@@ -15,7 +15,7 @@ import pytest
 
 from mcp_agent_chatterbox.errors import ToolFault
 from mcp_agent_chatterbox.registry import SUPPORTED_LANGUAGES, T3_MODELS
-from mcp_agent_chatterbox.speak import speak_once
+from mcp_agent_chatterbox.speak import _split_segments, speak_once
 
 
 @pytest.fixture(autouse=True)
@@ -268,3 +268,152 @@ class TestStyleParameters:
         assert call["exaggeration"] is None
         assert call["cfg_weight"] is None
         assert call["temperature"] is None
+
+
+class TestSamplingKnobs:
+    def test_explicit_values_forwarded(self, cfg, fake_engine):
+        run(
+            cfg,
+            fake_engine,
+            top_p=0.9,
+            top_k=500,
+            repetition_penalty=1.5,
+            norm_loudness=False,
+            seed=42,
+        )
+        call = fake_engine.calls[0]
+        assert call["top_p"] == 0.9
+        assert call["top_k"] == 500
+        assert call["repetition_penalty"] == 1.5
+        assert call["norm_loudness"] is False
+        assert call["seed"] == 42
+
+    def test_unset_values_stay_none(self, cfg, fake_engine):
+        run(cfg, fake_engine)
+        call = fake_engine.calls[0]
+        assert call["top_p"] is None
+        assert call["top_k"] is None
+        assert call["repetition_penalty"] is None
+        assert call["norm_loudness"] is None
+        assert call["seed"] is None
+
+    def test_chunks_share_the_sampling_knobs(self, cfg, fake_engine):
+        cfg.max_chunk_chars = 40
+        run(cfg, fake_engine, "Alpha. " * 6, top_p=0.9, top_k=500, seed=7)
+        for call in fake_engine.calls:
+            assert call["top_p"] == 0.9
+            assert call["top_k"] == 500
+            assert call["seed"] == 7
+
+
+class TestKnobValidation:
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"temperature": 5.5},
+            {"top_p": 1.5},
+            {"top_p": -0.1},
+            {"top_k": 1500},
+            {"top_k": -1},
+            {"repetition_penalty": 0.5},
+            {"repetition_penalty": 2.5},
+            {"exaggeration": 3.0},
+            {"cfg_weight": 1.5},
+            {"seed": -1},
+        ],
+    )
+    def test_out_of_range_knob_raises(self, cfg, fake_engine, kwargs):
+        with pytest.raises(ToolFault) as exc:
+            run(cfg, fake_engine, **kwargs)
+        assert exc.value.reason == "invalid_knob"
+        assert "range" in exc.value.message
+        assert fake_engine.calls == []
+
+    def test_boundary_values_accepted(self, cfg, fake_engine):
+        run(
+            cfg,
+            fake_engine,
+            temperature=5.0,
+            top_p=0.0,
+            top_k=0,
+            repetition_penalty=1.0,
+            exaggeration=2.0,
+            cfg_weight=1.0,
+            seed=0,
+        )
+        assert len(fake_engine.calls) == 1
+
+    def test_zero_seed_is_accepted_for_random(self, cfg, fake_engine):
+        # Upstream Gradio apps treat 0 as "random"; it is a valid request.
+        result = run(cfg, fake_engine, seed=0)
+        assert result["status"] == "ok"
+
+
+class TestSegmentSplitting:
+    def test_short_text_is_one_segment(self):
+        assert _split_segments("Hello.", 500) == ["Hello."]
+
+    def test_packs_sentences_up_to_budget(self):
+        text = "Sentence one. " * 5
+        segs = _split_segments(text, 40)
+        assert all(len(s) <= 40 for s in segs)
+        assert len(segs) == 3
+        assert "".join("".join(s.split()) for s in segs) == "".join(text.split())
+
+    def test_hard_splits_an_oversize_sentence_on_word_boundaries(self):
+        text = "The quick brown fox jumps over the lazy dog."  # 46 chars, one sentence
+        segs = _split_segments(text, 20)
+        assert len(segs) >= 2
+        assert all(len(s) <= 20 for s in segs)
+        words = text.split()
+        joined_words = " ".join(segs).split()
+        assert "".join(joined_words) == "".join(words)
+
+    def test_splits_at_newlines(self):
+        # The newline sticks to the preceding sentence; speak_one strips each
+        # segment before synthesis, so the rendered text is clean either way.
+        segs = _split_segments("Line one.\nLine two.\nLine three.", 12)
+        assert [s.strip() for s in segs] == ["Line one.", "Line two.", "Line three."]
+
+    def test_no_punctuation_hard_splits_evenly(self):
+        text = "word " * 30  # 150 chars, no enders at all
+        segs = _split_segments(text, 40)
+        assert all(len(s) <= 40 for s in segs)
+        assert "".join("".join(s.split()) for s in segs) == "".join(text.split())
+
+
+class TestChunking:
+    def test_short_text_is_a_single_call(self, cfg, fake_engine):
+        run(cfg, fake_engine, "Alpha. Beta. Gamma.")
+        assert len(fake_engine.calls) == 1
+        assert "chunks" not in run(cfg, fake_engine, "Alpha. Beta. Gamma.")
+
+    def test_long_text_is_split_into_chunks(self, cfg, fake_engine):
+        cfg.max_chunk_chars = 40
+        body = "Alpha. " * 6
+        result = run(cfg, fake_engine, body)
+        assert len(fake_engine.calls) == 2
+        assert all(len(call["text"]) <= 40 for call in fake_engine.calls)
+        assert result["chunks"] == 2
+
+    def test_chunked_result_is_one_wav_with_silence(self, cfg, fake_engine):
+        cfg.max_chunk_chars = 40
+        result = run(cfg, fake_engine, "Alpha. " * 6)
+        # 2 chunks of 2400 samples + 1 inter-chunk gap (250 ms @ 24 kHz).
+        assert result["sample_rate"] == 24000
+        assert result["duration_s"] == pytest.approx(0.45)
+        assert result["text_chars"] == len(("Alpha. " * 6).strip())
+
+    def test_chunked_output_still_writes_a_single_file(self, cfg, fake_engine):
+        cfg.max_chunk_chars = 40
+        result = run(cfg, fake_engine, "Alpha. " * 6)
+        path = cfg.output_dir / result["filename"]
+        assert path.is_file()
+        assert result["filename"] == path.name
+
+    def test_chunks_share_the_style_knobs(self, cfg, fake_engine):
+        cfg.max_chunk_chars = 40
+        run(cfg, fake_engine, "Alpha. " * 6, temperature=0.9, exaggeration=0.4)
+        for call in fake_engine.calls:
+            assert call["temperature"] == 0.9
+            assert call["exaggeration"] == 0.4

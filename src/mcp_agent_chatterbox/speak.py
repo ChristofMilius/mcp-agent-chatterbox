@@ -7,6 +7,15 @@ the MCP tool in tool_surface/speak_tools.py and the `speak` CLI subcommand.
 Keeping one implementation means a bug cannot be fixed in the tool and left
 broken on the command line (or vice versa).
 
+Long text is transparently chunked. Chatterbox's own generate() truncates
+large inputs (turbo degrades past roughly 600 chars and comes back shorter
+than a shorter prompt; the 500M models cap their output at 1000 speech
+tokens), so a single oversized render would be garbled. speak_once splits the
+text into sentence-aligned chunks of at most cfg.max_chunk_chars, renders each
+with the same voice and knobs, concatenates the waveforms with a short silence
+between them, and writes and plays one WAV. Short text takes the original
+single-render path unchanged.
+
 Recoverable conditions — empty text, over-long text, unknown model, bad
 language, missing reference clip, not enough VRAM — are raised as ToolFault so
 each caller can render them its own way. Anything unexpected propagates.
@@ -29,6 +38,86 @@ from mcp_agent_chatterbox.voices import resolve_voice
 logger = logging.getLogger(__name__)
 
 _CLIP_SUFFIXES = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+
+_SENTENCE_ENDERS = {".", "!", "?", ";", "\n"}
+_CLOSING_QUOTES = {'"', "'", ")", "]", "}", "\u201d", "\u2019"}
+
+
+def _sentence_ends(text: str) -> list[int]:
+    """Exclusive end indices of the sentence units in `text`."""
+    ends: list[int] = []
+    n = len(text)
+    i = 0
+    while i < n:
+        if text[i] in _SENTENCE_ENDERS:
+            j = i + 1
+            while j < n and text[j] in _CLOSING_QUOTES:
+                j += 1
+            ends.append(j)
+            i = j
+        else:
+            i += 1
+    if not ends or ends[-1] < n:
+        ends.append(n)
+    return ends
+
+
+def _split_segments(text: str, max_chunk: int) -> list[str]:
+    """
+    Greedily pack whole sentences into segments of at most `max_chunk` chars.
+
+    A sentence breaks at '.', '!', '?' or ';' (plus any immediately following
+    closing quotes) or at a newline. A single sentence longer than the budget
+    is hard-split, preferring the last space that fits so words stay intact.
+    """
+    if len(text) <= max_chunk:
+        return [text]
+
+    segments: list[str] = []
+    start = 0
+    fit = 0  # last sentence boundary that still fits the current segment
+    for end in _sentence_ends(text):
+        if end - start <= max_chunk:
+            fit = end
+            continue
+        if fit > start:
+            segments.append(text[start:fit])
+            start = fit
+        while end - start > max_chunk:
+            cut = text.rfind(" ", start, start + max_chunk)
+            if cut < start:
+                cut = start + max_chunk
+            else:
+                cut += 1  # take the space with it so words stay whole
+            segments.append(text[start:cut])
+            start = cut
+        fit = end
+    if fit > start:
+        segments.append(text[start:fit])
+    return segments
+
+
+def _merge_chunks(results: list[dict], pause_s: float) -> dict:
+    """Concatenate per-chunk waveforms with a short silence between them."""
+    import torch
+
+    first = results[0]
+    combined = first["wav"]
+    for r in results[1:]:
+        gap = torch.zeros((1, int(first["sample_rate"] * pause_s)), dtype=combined.dtype)
+        combined = torch.cat([combined, gap, r["wav"]], dim=1)
+    return {
+        "wav": combined,
+        "sample_rate": first["sample_rate"],
+        "model": first["model"],
+        "device": first["device"],
+        "elapsed_s": round(sum(r["elapsed_s"] for r in results), 2),
+        "chars": sum(r["chars"] for r in results),
+        "language": first["language"],
+        "reference_clip_used": first["reference_clip_used"],
+        "free_vram_mb": results[-1]["free_vram_mb"],
+        "chunks": len(results),
+    }
 
 
 def _validate_language(language: str | None) -> str | None:
@@ -61,6 +150,38 @@ def _validate_t3_model(t3_model: str | None) -> str | None:
             f"t3_model must be one of {sorted(T3_MODELS)}; got {t3_model!r}.",
         )
     return choice
+
+
+#: Bounds for the sampling/style knobs — the union of the ranges the upstream
+#: Gradio apps use per model (turbo caps temperature at 2.0, the 500M apps at
+#: 5.0, so the wider bound wins). seed=0 matches the apps' "0 for random".
+_KNOB_RANGES: dict[str, tuple[float, float]] = {
+    "temperature": (0.05, 5.0),
+    "top_p": (0.0, 1.0),
+    "top_k": (0.0, 1000.0),
+    "repetition_penalty": (1.0, 2.0),
+    "exaggeration": (0.0, 2.0),
+    "cfg_weight": (0.0, 1.0),
+    "seed": (0.0, float("inf")),
+}
+
+
+def _validate_knobs(knobs: dict[str, float | int | bool | None]) -> None:
+    """Fail fast on an out-of-range knob, before any weights load."""
+    for name, value in knobs.items():
+        if name == "norm_loudness" or value is None:
+            continue
+        low, high = _KNOB_RANGES.get(name, (float("-inf"), float("inf")))
+        if not (low <= value <= high):
+            raise ToolFault(
+                "invalid_knob",
+                f"{name}={value} is outside the allowed range [{low}, {high}]. "
+                "Unset it to keep the model's own tuned default.",
+                knob=name,
+                value=value,
+                min=low,
+                max=high,
+            )
 
 
 def _resolve_clip(voices_dir: Path, voice: str | None, reference_clip: str | None) -> str | None:
@@ -103,6 +224,11 @@ def speak_once(
     exaggeration: float | None = None,
     cfg_weight: float | None = None,
     temperature: float | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    repetition_penalty: float | None = None,
+    norm_loudness: bool | None = None,
+    seed: int | None = None,
     play_audio: bool | None = None,
     wait: bool = False,
     filename: str | None = None,
@@ -111,6 +237,11 @@ def speak_once(
     Render `text`, save the WAV under the configured output dir, play it if asked.
 
     Returns a JSON-safe dict. Raises ToolFault for recoverable conditions.
+
+    Knobs left as None keep the model's own tuned default. Knobs a model does
+    not support (top_k/norm_loudness are turbo-only; min_p, exaggeration and
+    cfg_weight do nothing on turbo) are dropped by the engine with a warning —
+    see registry.ModelSpec.honored_knobs.
     """
     body = (text or "").strip()
     if not body:
@@ -123,6 +254,18 @@ def speak_once(
             chars=len(body),
             max_chars=cfg.max_chars,
         )
+
+    _validate_knobs(
+        {
+            "exaggeration": exaggeration,
+            "cfg_weight": cfg_weight,
+            "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "repetition_penalty": repetition_penalty,
+            "seed": seed,
+        }
+    )
 
     spec = get_spec(model or cfg.model)
     if spec is None:
@@ -157,16 +300,50 @@ def speak_once(
             requires=["voice", "reference_clip"],
         )
 
-    result = engine.synthesize(
-        body,
-        spec.key,
-        reference_clip=clip,
-        language=lang,
-        t3_model=t3,
-        exaggeration=exaggeration,
-        cfg_weight=cfg_weight,
-        temperature=temperature,
-    )
+    segments = _split_segments(body, cfg.max_chunk_chars)
+    if len(segments) == 1:
+        result = engine.synthesize(
+            body,
+            spec.key,
+            reference_clip=clip,
+            language=lang,
+            t3_model=t3,
+            exaggeration=exaggeration,
+            cfg_weight=cfg_weight,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            repetition_penalty=repetition_penalty,
+            norm_loudness=norm_loudness,
+            seed=seed,
+        )
+    else:
+        logger.info(
+            "[speak] %d chars split into %d chunks (max %d)",
+            len(body),
+            len(segments),
+            cfg.max_chunk_chars,
+        )
+        results = [
+            engine.synthesize(
+                seg.strip(),
+                spec.key,
+                reference_clip=clip,
+                language=lang,
+                t3_model=t3,
+                exaggeration=exaggeration,
+                cfg_weight=cfg_weight,
+                temperature=temperature,
+                top_p=top_p,
+                top_k=top_k,
+                repetition_penalty=repetition_penalty,
+                norm_loudness=norm_loudness,
+                seed=seed,
+            )
+            for seg in segments
+        ]
+        result = _merge_chunks(results, pause_s=cfg.chunk_pause_ms / 1000.0)
+        result["chars"] = len(body)
 
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     if filename:
@@ -197,6 +374,8 @@ def speak_once(
         "played": played,
         "free_vram_mb": result["free_vram_mb"],
     }
+    if "chunks" in result:
+        payload["chunks"] = result["chunks"]
     if play_reason and not played:
         payload["playback_note"] = play_reason
     return payload

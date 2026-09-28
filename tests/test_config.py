@@ -21,6 +21,8 @@ class TestDefaults:
         assert c.strict_vram is False
         assert c.autoplay is True
         assert c.max_chars == 4000
+        assert c.max_chunk_chars == 500
+        assert c.chunk_pause_ms == 250
 
 
 class TestPathResolution:
@@ -76,6 +78,20 @@ class TestIntegers:
     def test_blank_falls_back(self, monkeypatch):
         monkeypatch.setenv("CHATTERBOX_MAX_CHARS", "")
         assert Config().max_chars == 4000
+
+    def test_chunk_settings_parse(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_MAX_CHUNK_CHARS", "300")
+        monkeypatch.setenv("CHATTERBOX_CHUNK_PAUSE_MS", "150")
+        c = Config()
+        assert c.max_chunk_chars == 300
+        assert c.chunk_pause_ms == 150
+
+    def test_chunk_settings_blank_fall_back(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_MAX_CHUNK_CHARS", "")
+        monkeypatch.setenv("CHATTERBOX_CHUNK_PAUSE_MS", "")
+        c = Config()
+        assert c.max_chunk_chars == 500
+        assert c.chunk_pause_ms == 250
 
 
 class TestGpuIndex:

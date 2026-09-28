@@ -168,9 +168,14 @@ The main call. Renders text, writes a WAV to the output dir, plays it.
 | `reference_clip` | — | Path to a wav/mp3/flac, as an alternative to `voice` |
 | `language` | — | ISO 639-1 code, multilingual only |
 | `t3_model` | `v2` | `v2` \| `v3`, multilingual only |
-| `exaggeration` | per model | Emotional range |
-| `cfg_weight` | per model | Guidance strength. turbo `0.0`, 500M models `0.5` |
-| `temperature` | per model | Sampling temperature |
+| `exaggeration` | per model | Emotional range. 500M models only — turbo ignores it |
+| `cfg_weight` | per model | Guidance strength. 500M models only, turbo `0.0` / 500M `0.5` |
+| `temperature` | per model | Sampling temperature (0.05–5.0) |
+| `top_p` | per model | Nucleus-sampling cutoff (0.0–1.0) |
+| `top_k` | per model | Top-k sampling size (0–1000). Turbo only — the 500M models have no such parameter |
+| `repetition_penalty` | per model | Penalise repeated tokens (1.0–2.0) |
+| `norm_loudness` | per model | Normalize to −27 LUFS. Turbo only — the 500M models have no such parameter |
+| `seed` | random | Reseed torch for a reproducible re-render within the resident session; `0` means random. Not guaranteed byte-identical across a restart |
 | `play_audio` | server setting | `false` writes the file only |
 | `wait` | `false` | Block until playback finishes |
 | `filename` | generated | Output basename |
@@ -178,7 +183,16 @@ The main call. Renders text, writes a WAV to the output dir, plays it.
 Style parameters left unset keep each model's own tuned values rather than a
 single global default — turbo is tuned for latency at `cfg_weight=0.0`, the
 500M models for fidelity at `0.5`, and forcing one number onto all three
-audibly degrades two of them.
+audibly degrades two of them. A knob a model does not support (turbo ignores
+`exaggeration`/`cfg_weight`; the 500M models take no `top_k`/`norm_loudness`)
+is dropped with a warning rather than crashing.
+
+Text longer than `CHATTERBOX_MAX_CHUNK_CHARS` is spoken as one file but
+rendered in sentence-aligned chunks: Chatterbox's own `generate()` truncates
+long inputs (turbo degrades past roughly 600 characters and comes back shorter
+than a shorter prompt), so a single oversized render would be garbled. The
+chunks share the same voice, style knobs and reference clip, and are stitched
+together with `CHATTERBOX_CHUNK_PAUSE_MS` of silence between them.
 
 ```jsonc
 // a quick aside in the stock voice
@@ -364,6 +378,8 @@ All settings are environment variables, read at startup. No secrets.
 | `CHATTERBOX_LOGS_DIR` | `logs` | Rotating log file location |
 | `CHATTERBOX_AUTOPLAY` | `1` | Play audio after writing |
 | `CHATTERBOX_MAX_CHARS` | `4000` | Reject longer single requests |
+| `CHATTERBOX_MAX_CHUNK_CHARS` | `500` | Long text auto-splits into sentence-aligned chunks of up to this many chars |
+| `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence inserted between concatenated chunks |
 | `CHATTERBOX_VRAM_MB` | `4096` | Free-VRAM floor for a load attempt |
 | `CHATTERBOX_STRICT_VRAM` | `0` | `1` refuses a load below the floor instead of warning |
 | `HF_HOME` | — | Override the Hugging Face cache location |

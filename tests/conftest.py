@@ -23,6 +23,8 @@ _CONFIG_ENV = [
     "CHATTERBOX_STRICT_VRAM",
     "CHATTERBOX_AUTOPLAY",
     "CHATTERBOX_MAX_CHARS",
+    "CHATTERBOX_MAX_CHUNK_CHARS",
+    "CHATTERBOX_CHUNK_PAUSE_MS",
 ]
 
 
@@ -56,6 +58,10 @@ class FakeTorch:
 
     def __init__(self, *, available=True, count=1, free_mb=None, names=None):
         self.cuda = _FakeCuda(available, count, free_mb, names or {})
+        self.manual_seed_calls: list[int] = []
+
+    def manual_seed(self, seed: int) -> None:
+        self.manual_seed_calls.append(seed)
 
     def __repr__(self):
         return f"<FakeTorch cuda={self.cuda}>"
@@ -67,6 +73,7 @@ class _FakeCuda:
         self._count = count
         self._free = free_mb or [0] * count
         self._names = names
+        self.manual_seed_all_calls: list[int] = []
 
     def is_available(self):
         return self._available
@@ -85,6 +92,9 @@ class _FakeCuda:
 
     def empty_cache(self):
         pass
+
+    def manual_seed_all(self, seed: int) -> None:
+        self.manual_seed_all_calls.append(seed)
 
     def __repr__(self):
         return f"cuda(available={self._available}, count={self._count})"
