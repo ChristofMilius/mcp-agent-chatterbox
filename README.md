@@ -199,10 +199,10 @@ together with `CHATTERBOX_CHUNK_PAUSE_MS` of silence between them.
 { "text": "Build finished. All tests pass.", "model": "turbo" }
 
 // German, cloned voice
-{ "text": "Der Build ist fertig.", "model": "multilingual", "voice": "seven", "language": "de" }
+{ "text": "Der Build ist fertig.", "model": "multilingual", "language": "de" }
 
-// expressive narration
-{ "text": "And then [chuckle] it compiled on the first try.", "model": "turbo",
+// expressive narration — exaggeration tunes the 500M models; turbo ignores it
+{ "text": "And then [chuckle] it compiled on the first try.", "model": "original",
   "exaggeration": 0.4 }
 ```
 

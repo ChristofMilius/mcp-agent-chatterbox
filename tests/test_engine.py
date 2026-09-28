@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pytest
 import torch
 
 from mcp_agent_chatterbox.config import Config
-from mcp_agent_chatterbox.engine import ChatterboxEngine
+from mcp_agent_chatterbox.engine import ChatterboxEngine, _harden_reference_dtype
 from mcp_agent_chatterbox.errors import ToolFault
 from mcp_agent_chatterbox.registry import (
     MODEL_SPECS,
@@ -285,6 +286,9 @@ class FakeModel:
     def __init__(self):
         self.renders: list[tuple[str, dict]] = []
 
+    def norm_loudness(self, wav, sr):
+        return wav
+
     def generate(self, text: str, **kwargs):
         self.renders.append((text, kwargs))
         return torch.zeros(1, 2400)
@@ -391,3 +395,42 @@ class TestSynthesize:
         assert result["model"] == "turbo"
         assert result["chars"] == 2
         assert result["wav"].shape == (1, 2400)
+
+
+class TestReferenceDtypeShim:
+    """The float64 upcast in upstream norm_loudness() must never reach torch.
+
+    norm_loudness() scales by a pyloudnorm np.float64 loudness, promoting the
+    float32 wav to float64; s3tokenizer's float32 mel filters and the voice
+    encoder's LSTM then both refuse the double array. The shim pins the output
+    back to float32. The real load() path applies it; here we test the wrapper.
+    """
+
+    def test_coerces_float64_numpy_to_float32(self):
+        model = FakeModel()
+        model.norm_loudness = lambda wav, sr: np.asarray(wav, dtype=np.float64)
+
+        model.norm_loudness = _harden_reference_dtype(model.norm_loudness)
+        out = model.norm_loudness(np.zeros(8, dtype=np.float32), 24000)
+
+        assert isinstance(out, np.ndarray)
+        assert out.dtype == np.float32
+
+    def test_leaves_float32_numpy_unchanged(self):
+        model = FakeModel()
+        model.norm_loudness = lambda wav, sr: np.asarray(wav, dtype=np.float32)
+
+        model.norm_loudness = _harden_reference_dtype(model.norm_loudness)
+        out = model.norm_loudness(np.zeros(8, dtype=np.float32), 24000)
+
+        assert out.dtype == np.float32
+
+    def test_coerces_float64_tensor_to_float32(self):
+        model = FakeModel()
+        model.norm_loudness = lambda wav, sr: torch.zeros(8, dtype=torch.float64)
+
+        model.norm_loudness = _harden_reference_dtype(model.norm_loudness)
+        out = model.norm_loudness(np.zeros(8, dtype=np.float32), 24000)
+
+        assert isinstance(out, torch.Tensor)
+        assert out.dtype == torch.float32

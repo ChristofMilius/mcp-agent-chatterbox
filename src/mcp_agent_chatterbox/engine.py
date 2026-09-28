@@ -61,6 +61,32 @@ def _load_torch():
     return torch
 
 
+def _harden_reference_dtype(method):
+    """Pin reference-wav helpers to float32 (upstream chatterbox dtype bug).
+
+    Chatterbox's norm_loudness() scales a float32 wav by the ratio of the
+    reference loudness to the target: pyloudnorm returns that loudness as a
+    numpy float64, and numpy promotes the array to float64 to match. From
+    there the whole reference path flows double, and every consumer rejects
+    it — s3tokenizer's mel filters are registered float32 ("expected scalar
+    type Double but found Float"), and the voice encoder's LSTM demands
+    torch.float32 input. This wraps the model's method so its output is
+    always float32, until upstream pins it.
+    """
+    import numpy as np
+    import torch
+
+    def wrapped(*args, **kwargs):
+        out = method(*args, **kwargs)
+        if isinstance(out, np.ndarray) and out.dtype != np.float32:
+            return out.astype(np.float32)
+        if isinstance(out, torch.Tensor) and out.dtype != torch.float32:
+            return out.float()
+        return out
+
+    return wrapped
+
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -364,6 +390,9 @@ class ChatterboxEngine:
             logger.error("[engine] %s load failed: %s", spec.key, exc, exc_info=True)
             self._raise_load_failure(spec, exc, device)
         elapsed = time.perf_counter() - started
+
+        if hasattr(model, "norm_loudness"):
+            model.norm_loudness = _harden_reference_dtype(model.norm_loudness)
 
         _MODEL_CACHE[key] = model
         self._loaded_key = key
