@@ -82,6 +82,12 @@ ignore = ["E501"]
 venvPath = "."
 venv = ".venv"
 include = ["src", "tests"]
+# The project pins >=3.13,<3.14; pyright otherwise assumes 3.8 and flags
+# every PEP 695 construct (3.12+) as a syntax error in code the runtime runs
+# fine. `torch.version.cuda` / `torch.__version__` are a known gap in torch's
+# bundled stubs (real at runtime, absent in `.pyi`) — left as-is, unfixed, on
+# purpose: the stubs ship inside the installed package we must not edit.
+pythonVersion = "3.13"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

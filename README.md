@@ -13,15 +13,16 @@ Ships two things:
   and a `/speak` command to opencode itself, and installs itself globally so
   it works in every project, not just this repo.
 
-## The three models
+## The four models
 
 | Key | Params | Languages | Reference clip | Notes |
 |---|---|---|---|---|
 | `turbo` | 350M | English | **not needed** | Default. Fastest, lowest VRAM. Built-in voice. Understands paralinguistic tags inline: `[laugh]`, `[chuckle]`, `[cough]`, `[sigh]`, `[whisper]`. |
+| `nano` | 110M | English | **not needed** | Turbo's small sibling: same architecture, single-step decoder, tags and built-in voice, tightest latency/memory budget (also runs on CPU). |
 | `multilingual` | 500M | 23 (incl. German) | **required** | `language="de"`, `en`, `fr`, … `t3_model="v2"` (default) or `"v3"`. |
 | `original` | 500M | English | **required** | The CFG / exaggeration-tuning model, for delivery style control. |
 
-Only `turbo` ships a stock voice. The other two raise
+Only `turbo` and `nano` ship a stock voice. The other two raise
 `AssertionError: Please prepare_conditionals first or specify audio_prompt_path`
 without a reference clip, so the tool checks this up front and returns a
 `reference_clip_required` payload naming the fix instead of a stack trace.
@@ -124,7 +125,7 @@ wheel lacks:
 
 `pyproject.toml` pins the snapshot to an exact commit (`rev = 5de7a54a…`) under
 `[tool.uv.sources]`, so the environment is reproducible. To pick up newer
-upstream work, bump the `rev` deliberately and re-run the three models — then
+upstream work, bump the `rev` deliberately and re-run the four models — then
 re-examine the dtype-shim reasoning, because upstream still carries the
 `norm_loudness` float64 upcast that `engine._harden_reference_dtype()` exists
 to contain. The snapshot also builds `resemble-perth` from git (the watermarker

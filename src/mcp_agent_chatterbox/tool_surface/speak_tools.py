@@ -11,6 +11,8 @@ The tool is a thin shell over speak.speak_once(), which the CLI shares. All it
 Model selection:
   * model="turbo" (default) speaks with no reference clip and understands
     paralinguistic tags inline in the text ([laugh], [chuckle], ...).
+  * model="nano" is turbo's 110M sibling — same architecture, tags and
+    built-in voice, tightest latency/memory budget (also CPU-capable).
   * model="multilingual" needs voice=/reference_clip= and accepts language=
     as an ISO 639-1 code.
   * model="original" needs voice=/reference_clip= and is the English
@@ -54,9 +56,10 @@ def register(server, ctx) -> None:
         by default play it through the system audio device.
 
         model:   "turbo" (default, 350M, English, no reference clip needed,
-                 supports inline [laugh]/[chuckle] tags), "multilingual" (500M,
-                 23 languages, requires a reference clip) or "original" (500M,
-                 English, requires a reference clip).
+                 supports inline [laugh]/[chuckle] tags), "nano" (110M,
+                 turbo's smaller sibling, built-in voice, tightest budget),
+                 "multilingual" (500M, 23 languages, requires a reference clip)
+                 or "original" (500M, English, requires a reference clip).
         voice:   name of a reference clip in the voices directory (its filename
                  without extension). Required for multilingual/original.
         reference_clip: path to a wav/mp3/flac clip, as an alternative to voice=.
@@ -72,17 +75,17 @@ def register(server, ctx) -> None:
         t3_model: "v2" (default) or "v3" — multilingual checkpoint.
         temperature: sampling temperature (0.05-5.0). Honored by all models.
         top_p: nucleus-sampling cutoff (0.0-1.0). Honored by all models.
-        top_k: top-k sampling size (0-1000). Honored by turbo only — the 500M
-                 models have no such parameter.
+        top_k: top-k sampling size (0-1000). Honored by turbo/nano only — the
+                 500M models have no such parameter.
         repetition_penalty: penalise repeated tokens (1.0-2.0). Honored by all
                  models.
-        norm_loudness: normalize output to -27 LUFS. Honored by turbo only —
-                 the 500M models have no such parameter.
+        norm_loudness: normalize output to -27 LUFS. Honored by turbo/nano only
+                 — the 500M models have no such parameter.
         exaggeration/cfg_weight: style controls (0.0-2.0 / 0.0-1.0). Honored
-                 ONLY by the 500M models (multilingual/original); turbo ignores
-                 both, so setting them with model="turbo" is dropped with a
-                 warning, not an error. cfg_weight>0 doubles the text tokens
-                 for CFG guidance.
+                 ONLY by the 500M models (multilingual/original); turbo/nano
+                 ignore both, so setting them with model="turbo" is dropped
+                 with a warning, not an error. cfg_weight>0 doubles the text
+                 tokens for CFG guidance.
         seed: reseed torch (CPU + CUDA) so re-renders are reproducible within
                  the resident session; 0 (the upstream convention) or unset
                  keeps random sampling. Byte-identical output across a server

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 import torch
 
+from mcp_agent_chatterbox import engine as engine_module
 from mcp_agent_chatterbox.config import Config
 from mcp_agent_chatterbox.engine import ChatterboxEngine, _harden_reference_dtype
 from mcp_agent_chatterbox.errors import ToolFault
@@ -207,13 +208,13 @@ class TestStatus:
 
 
 class TestRegistry:  # noqa: N801 — the registry is imported into this test module
-    def test_describe_lists_all_three_models(self):
+    def test_describe_lists_all_four_models(self):
         keys = {m["key"] for m in describe_models()}
-        assert keys == {"turbo", "multilingual", "original"}
+        assert keys == {"turbo", "nano", "multilingual", "original"}
 
-    def test_only_turbo_has_a_stock_voice(self):
+    def test_turbo_and_nano_have_a_stock_voice(self):
         stock = {m["key"] for m in describe_models() if m["stock_voice"]}
-        assert stock == {"turbo"}
+        assert stock == {"turbo", "nano"}
 
     def test_models_without_stock_voice_are_flagged(self):
         for m in describe_models():
@@ -231,6 +232,7 @@ class TestRegistry:  # noqa: N801 — the registry is imported into this test mo
         assert spec_key("multi") == "multilingual"
         assert spec_key("mtl") == "multilingual"
         assert spec_key("chatterbox-turbo") == "turbo"
+        assert spec_key("chatterbox-nano") == "nano"
         assert spec_key("english") == "original"
 
     def test_aliases_are_case_insensitive(self):
@@ -277,6 +279,63 @@ class TestRegistry:  # noqa: N801 — the registry is imported into this test mo
         # Mirrors the upstream-snapshot default (mtl_tts.generate). The PyPI
         # 0.1.7 release used 2.0; master retuned it to 1.2.
         assert MODEL_SPECS["multilingual"].defaults["repetition_penalty"] == 1.2
+
+    def test_nano_uses_turbo_class_with_nano_load_flag(self):
+        nano = MODEL_SPECS["nano"]
+        assert nano.module == "chatterbox.tts_turbo"
+        assert nano.attr == "ChatterboxTurboTTS"
+        assert nano.load_kwargs == {"nano": True}
+        assert nano.params == "110M"
+        assert nano.stock_voice is True
+
+    def test_turbo_has_no_extra_load_kwargs(self):
+        # turbo is the class default; only nano diverges within the family.
+        assert MODEL_SPECS["turbo"].load_kwargs == {}
+
+
+class TestLoadKwargs:
+    """load() must forward spec.load_kwargs into from_pretrained()."""
+
+    @pytest.fixture(autouse=True)
+    def clear_model_cache(self):
+        engine_module._MODEL_CACHE.clear()
+        yield
+        engine_module._MODEL_CACHE.clear()
+
+    def _recording_cls(self, monkeypatch):
+        class Recording:
+            calls: list[dict] = []
+
+            @classmethod
+            def from_pretrained(cls, **kwargs):
+                Recording.calls.append(kwargs)
+                return object.__new__(cls)
+
+        monkeypatch.setattr(engine_module, "load_model_class", lambda spec: Recording)
+        return Recording
+
+    def _engine(self, device="cpu") -> ChatterboxEngine:
+        cfg = Config()
+        cfg.device = device
+        eng = ChatterboxEngine(cfg)
+        eng.resolve_device = lambda: device
+        eng._preflight = lambda device: None
+        return eng
+
+    def test_nano_forwards_nano_flag(self, monkeypatch):
+        recording = self._recording_cls(monkeypatch)
+        self._engine().load("nano")
+        assert recording.calls == [{"device": "cpu", "nano": True}]
+
+    def test_turbo_forwards_no_extra_kwargs(self, monkeypatch):
+        recording = self._recording_cls(monkeypatch)
+        self._engine().load("turbo")
+        assert recording.calls == [{"device": "cpu"}]
+
+    def test_t3_model_is_added_for_multilingual(self, monkeypatch):
+        recording = self._recording_cls(monkeypatch)
+        self._engine().load("multilingual", t3_model="v3")
+        assert recording.calls == [{"device": "cpu", "t3_model": "v3"}]
 
 
 class FakeModel:

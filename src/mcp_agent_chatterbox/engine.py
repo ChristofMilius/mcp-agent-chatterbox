@@ -351,7 +351,7 @@ class ChatterboxEngine:
         if spec is None:
             raise ToolFault(
                 "unknown_model",
-                f"Unknown model {model_key!r}. Known models: turbo, multilingual, original.",
+                f"Unknown model {model_key!r}. Known models: turbo, nano, multilingual, original.",
             )
 
         key: _CACHE_KEY = (spec.key, t3_model or "")
@@ -382,10 +382,10 @@ class ChatterboxEngine:
         )
         started = time.perf_counter()
         try:
+            load_kwargs = dict(spec.load_kwargs)
             if t3_model:
-                model = model_cls.from_pretrained(device=device, t3_model=t3_model)
-            else:
-                model = model_cls.from_pretrained(device=device)
+                load_kwargs["t3_model"] = t3_model
+            model = model_cls.from_pretrained(device=device, **load_kwargs)
         except Exception as exc:  # noqa: BLE001
             logger.error("[engine] %s load failed: %s", spec.key, exc, exc_info=True)
             self._raise_load_failure(spec, exc, device)
@@ -417,8 +417,8 @@ class ChatterboxEngine:
                 + " Free the GPU or switch cards with CHATTERBOX_GPU_INDEX.",
                 free_mb=free,
             ) from exc
-        if spec.key == "turbo" and device.startswith("cuda"):
-            logger.debug("[engine] turbo CUDA load error (may be benign): %s", exc)
+        if spec.key in ("turbo", "nano") and device.startswith("cuda"):
+            logger.debug("[engine] turbo/nano CUDA load error (may be benign): %s", exc)
         raise ToolFault(
             "model_load_failed",
             f"Could not load {spec.label} on {device} ({name}). "

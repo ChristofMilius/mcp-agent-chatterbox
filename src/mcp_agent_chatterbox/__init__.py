@@ -3,7 +3,7 @@ mcp_agent_chatterbox — MCP server for local GPU-accelerated text-to-speech
 ===========================================================================
 Wraps Resemble AI's Chatterbox family (MIT) as an agent-facing tool surface.
 
-Three models, chosen per call:
+Four models, chosen per call:
 
   * turbo        350M, English, native paralinguistic tags ([laugh],
                  [chuckle], ...). Lowest VRAM and lowest latency, and the

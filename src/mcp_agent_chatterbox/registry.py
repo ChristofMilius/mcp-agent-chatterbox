@@ -1,5 +1,5 @@
 """
-registry.py — what the three Chatterbox models are and how to drive them
+registry.py — what the four Chatterbox models are and how to drive them
 =======================================================================
 Chatterbox exposes three `generate()` signatures that do not agree with each
 other, and the per-model defaults are not the same either. Turbo is tuned for
@@ -85,6 +85,10 @@ class ModelSpec:
     #: tool layer omits any kwarg the caller left unspecified so the library
     #: default applies.
     defaults: dict[str, Any] = field(default_factory=dict)
+    #: Extra keyword arguments passed through to the class' `from_pretrained()`
+    #: at load time (e.g. turbo-family `nano=True`, multilingual `t3_model` is
+    #: handled separately because it is caller-supplied).
+    load_kwargs: dict[str, Any] = field(default_factory=dict)
     #: The subset of generate() kwargs that actually have an effect for this
     #: model. The three signatures overlap but do not agree: turbo honors
     #: top_k/norm_loudness but ignores min_p/exaggeration/cfg_weight, while the
@@ -123,6 +127,34 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             "Lowest latency and VRAM. Has a built-in voice, so no reference clip "
             "is needed. Understands paralinguistic tags such as [laugh] and "
             "[chuckle] inline in the text."
+        ),
+    ),
+    "nano": ModelSpec(
+        key="nano",
+        label="Chatterbox-Nano",
+        module="chatterbox.tts_turbo",
+        attr="ChatterboxTurboTTS",
+        params="110M",
+        languages="English",
+        stock_voice=True,
+        load_kwargs={"nano": True},
+        honored_knobs=frozenset(
+            {"repetition_penalty", "top_p", "top_k", "norm_loudness", "temperature"}
+        ),
+        defaults={
+            "repetition_penalty": 1.2,
+            "min_p": 0.00,
+            "top_p": 0.95,
+            "top_k": 1000,
+            "exaggeration": 0.0,
+            "cfg_weight": 0.0,
+            "temperature": 0.8,
+            "norm_loudness": True,
+        },
+        note=(
+            "Turbo's 110M sibling: same architecture, single-step decoder and "
+            "paralinguistic tags, aimed at tight latency and memory budgets "
+            "(also runs on CPU). Has a built-in voice and is watermarked like turbo."
         ),
     ),
     "multilingual": ModelSpec(
@@ -194,6 +226,10 @@ def get_spec(model_key: str | None) -> ModelSpec | None:
         "chatterbox": "original",
         "tts": "original",
         "chatterbox-turbo": "turbo",
+        "chat-turbo": "turbo",
+        "turbo-chatterbox": "turbo",
+        "chatterbox-nano": "nano",
+        "chat-nano": "nano",
         "chatterbox-tts": "original",
         "chatterbox-multilingual": "multilingual",
     }

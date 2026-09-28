@@ -2,7 +2,7 @@
 audio.py — waveform → file, and duration arithmetic
 ====================================================
 Chatterbox's generate() hands back a torch tensor on CPU, shaped (1, N) for
-every one of the three models. Saving and measuring are wrapped here so the
+every one of the four models. Saving and measuring are wrapped here so the
 tool layer never has to care about rank or device.
 
 torchaudio is imported lazily inside the functions: it is a hard dependency of

@@ -32,6 +32,9 @@ Picking a model:
                  it works with no reference clip. Understands paralinguistic
                  tags written inline in the text: [laugh], [chuckle], [sigh],
                  [cough], [whisper]. Best default.
+  * nano         110M, English, turbo's smaller sibling: same architecture,
+                 tags and built-in voice, tightest latency/memory budget (also
+                 runs on CPU).
   * multilingual 500M, 23 languages including German. REQUIRES a reference
                  clip (voice= or reference_clip=). Pass language="de" etc.
   * original     500M, English, the CFG/exaggeration tuning model. REQUIRES a
