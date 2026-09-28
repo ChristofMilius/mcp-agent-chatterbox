@@ -49,6 +49,7 @@ def register(server, ctx) -> None:
         seed: int | None = None,
         play_audio: bool | None = None,
         wait: bool = False,
+        progressive: bool | None = None,
         filename: str | None = None,
     ) -> str:
         """
@@ -97,6 +98,11 @@ def register(server, ctx) -> None:
         play_audio: set false to only write the file. Defaults to the server
                  setting (on).
         wait: block until playback finishes instead of returning immediately.
+        progressive: for long multi-chunk text with playback on, start playing
+                 each sentence-chunk the moment it is rendered instead of
+                 waiting for the whole utterance to generate first. Defaults
+                 to the server setting (off). Ignored otherwise — single
+                 utterances and playback-off calls behave exactly as before.
         filename: output basename; a safe name is generated when omitted.
 
         The first call downloads the model from Hugging Face (hundreds of MB to
@@ -124,6 +130,7 @@ def register(server, ctx) -> None:
                 seed=seed,
                 play_audio=play_audio,
                 wait=wait,
+                progressive=progressive,
                 filename=filename,
             )
             return json.dumps(payload, indent=2, ensure_ascii=False)

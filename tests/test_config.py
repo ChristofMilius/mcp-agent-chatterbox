@@ -20,6 +20,7 @@ class TestDefaults:
         assert c.vram_floor_mb == DEFAULT_VRAM_FLOOR_MB
         assert c.strict_vram is False
         assert c.autoplay is True
+        assert c.progressive is False
         assert c.max_chars == 4000
         assert c.max_chunk_chars == 500
         assert c.chunk_pause_ms == 250
@@ -86,6 +87,16 @@ class TestBooleans:
     def test_garbage_falls_back_to_default(self, monkeypatch):
         monkeypatch.setenv("CHATTERBOX_AUTOPLAY", "perhaps")
         assert Config().autoplay is True
+
+
+class TestProgressive:
+    def test_enabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_PROGRESSIVE", "1")
+        assert Config().progressive is True
+
+    def test_defaults_off(self, monkeypatch):
+        monkeypatch.delenv("CHATTERBOX_PROGRESSIVE", raising=False)
+        assert Config().progressive is False
 
 
 class TestIntegers:

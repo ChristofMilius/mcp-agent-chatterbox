@@ -24,6 +24,9 @@ each caller can render them its own way. Anything unexpected propagates.
 from __future__ import annotations
 
 import logging
+import queue
+import threading
+import time
 from pathlib import Path
 
 from mcp_agent_chatterbox.audio import duration_s, write_wav
@@ -31,7 +34,7 @@ from mcp_agent_chatterbox.config import Config
 from mcp_agent_chatterbox.engine import ChatterboxEngine
 from mcp_agent_chatterbox.errors import ToolFault
 from mcp_agent_chatterbox.names import slugify, speech_filename
-from mcp_agent_chatterbox.playback import play
+from mcp_agent_chatterbox.playback import play, player_available
 from mcp_agent_chatterbox.registry import SUPPORTED_LANGUAGES, T3_MODELS, get_spec
 from mcp_agent_chatterbox.voices import resolve_voice
 
@@ -118,6 +121,42 @@ def _merge_chunks(results: list[dict], pause_s: float) -> dict:
         "free_vram_mb": results[-1]["free_vram_mb"],
         "chunks": len(results),
     }
+
+
+def _write_chunk_wav(result: dict, out_dir: Path, final_path: Path, index: int) -> Path:
+    """Stage one chunk to its own file so playback can start before merging."""
+    path = out_dir / f"{final_path.stem}.progressive-{index + 1}.wav"
+    write_wav(result["wav"], result["sample_rate"], path)
+    return path
+
+
+def _stream_chunks(chunk_paths: queue.Queue[Path | None], pause_s: float) -> None:
+    """
+    Play chunk paths in arrival order; each lands on the speakers as it renders.
+
+    Runs on a dedicated thread so the synchronous per-chunk PlaySound does not
+    stall synthesis of the following chunk. The staged files are removed once
+    played (best effort — a failure leaves them in the output dir for review).
+    """
+    seen: list[Path] = []
+    try:
+        while True:
+            path = chunk_paths.get()
+            if path is None:
+                break
+            seen.append(path)
+            played, reason = play(path, wait=True)
+            if not played:
+                logger.warning("[speak] progressive chunk not played: %s (%s)", path.name, reason)
+                continue
+            if pause_s > 0:
+                time.sleep(pause_s)
+    finally:
+        for staged in seen:
+            try:
+                staged.unlink()
+            except OSError:
+                pass
 
 
 def _validate_language(language: str | None) -> str | None:
@@ -231,12 +270,18 @@ def speak_once(
     seed: int | None = None,
     play_audio: bool | None = None,
     wait: bool = False,
+    progressive: bool | None = None,
     filename: str | None = None,
 ) -> dict:
     """
     Render `text`, save the WAV under the configured output dir, play it if asked.
 
     Returns a JSON-safe dict. Raises ToolFault for recoverable conditions.
+
+    With `progressive` (or CHATTERBOX_PROGRESSIVE) and playback enabled, long
+    text does not wait for the full synthesis: the first rendered chunk starts
+    playing while later chunks are still being generated. This only applies to
+    multi-chunk text; a single short utterance plays unchanged.
 
     Knobs left as None keep the model's own tuned default. Knobs a model does
     not support (top_k/norm_loudness are turbo-only; min_p, exaggeration and
@@ -301,6 +346,19 @@ def speak_once(
         )
 
     segments = _split_segments(body, cfg.max_chunk_chars)
+
+    cfg.output_dir.mkdir(parents=True, exist_ok=True)
+    if filename:
+        out_path = cfg.output_dir / f"{slugify(Path(filename).stem)}.wav"
+    else:
+        out_path = cfg.output_dir / speech_filename(body, spec.key)
+
+    should_play = cfg.autoplay if play_audio is None else play_audio
+
+    playback_q: queue.Queue[Path | None] | None = None
+    player: threading.Thread | None = None
+    progressive_used = False
+
     if len(segments) == 1:
         result = engine.synthesize(
             body,
@@ -324,38 +382,56 @@ def speak_once(
             len(segments),
             cfg.max_chunk_chars,
         )
-        results = [
-            engine.synthesize(
-                seg.strip(),
-                spec.key,
-                reference_clip=clip,
-                language=lang,
-                t3_model=t3,
-                exaggeration=exaggeration,
-                cfg_weight=cfg_weight,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                norm_loudness=norm_loudness,
-                seed=seed,
+        use_progressive = (
+            (progressive if progressive is not None else cfg.progressive)
+            and should_play
+            and player_available()
+        )
+        pause_s = cfg.chunk_pause_ms / 1000.0
+        if use_progressive:
+            playback_q = queue.Queue()
+            player = threading.Thread(
+                target=_stream_chunks, args=(playback_q, pause_s), daemon=True
             )
-            for seg in segments
-        ]
-        result = _merge_chunks(results, pause_s=cfg.chunk_pause_ms / 1000.0)
+            player.start()
+        try:
+            results: list[dict] = []
+            for index, seg in enumerate(segments):
+                r = engine.synthesize(
+                    seg.strip(),
+                    spec.key,
+                    reference_clip=clip,
+                    language=lang,
+                    t3_model=t3,
+                    exaggeration=exaggeration,
+                    cfg_weight=cfg_weight,
+                    temperature=temperature,
+                    top_p=top_p,
+                    top_k=top_k,
+                    repetition_penalty=repetition_penalty,
+                    norm_loudness=norm_loudness,
+                    seed=seed,
+                )
+                results.append(r)
+                if playback_q is not None:
+                    playback_q.put(_write_chunk_wav(r, cfg.output_dir, out_path, index))
+        finally:
+            if playback_q is not None:
+                playback_q.put(None)
+        result = _merge_chunks(results, pause_s)
         result["chars"] = len(body)
+        progressive_used = player is not None
 
-    cfg.output_dir.mkdir(parents=True, exist_ok=True)
-    if filename:
-        out_path = cfg.output_dir / f"{slugify(Path(filename).stem)}.wav"
-    else:
-        out_path = cfg.output_dir / speech_filename(body, spec.key)
     write_wav(result["wav"], result["sample_rate"], out_path)
 
-    should_play = cfg.autoplay if play_audio is None else play_audio
     played, play_reason = (False, "playback disabled")
     if should_play:
-        played, play_reason = play(out_path, wait=wait)
+        if progressive_used:
+            if wait and player is not None:
+                player.join(timeout=180)
+            played = True
+        else:
+            played, play_reason = play(out_path, wait=wait)
 
     payload = {
         "status": "ok",
@@ -372,6 +448,7 @@ def speak_once(
         "output_dir": str(cfg.output_dir),
         "path": str(out_path),
         "played": played,
+        "progressive": progressive_used,
         "free_vram_mb": result["free_vram_mb"],
     }
     if "chunks" in result:

@@ -120,6 +120,11 @@ class Config:
         self.strict_vram: bool = _env_bool("CHATTERBOX_STRICT_VRAM", False)
         self.autoplay: bool = _env_bool("CHATTERBOX_AUTOPLAY", True)
 
+        #: When text is long enough to need chunking and playback is on, start
+        #: playing each chunk the moment it is rendered instead of waiting for
+        #: the whole utterance to synthesise first.
+        self.progressive: bool = _env_bool("CHATTERBOX_PROGRESSIVE", False)
+
         #: Reject text longer than this instead of attempting a synthesis that
         #: will take minutes and blow the context window of whoever is waiting.
         self.max_chars: int = _env_int("CHATTERBOX_MAX_CHARS", 4000)
@@ -148,6 +153,7 @@ class Config:
             f"vram_floor_mb={self.vram_floor_mb!r}, "
             f"strict_vram={self.strict_vram!r}, "
             f"autoplay={self.autoplay!r}, "
+            f"progressive={self.progressive!r}, "
             f"max_chars={self.max_chars!r}, "
             f"max_chunk_chars={self.max_chunk_chars!r}, "
             f"chunk_pause_ms={self.chunk_pause_ms!r}, "

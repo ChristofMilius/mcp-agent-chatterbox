@@ -133,6 +133,7 @@ def _cmd_speak(args) -> int:
             seed=args.seed,
             play_audio=not args.no_play,
             wait=args.wait,
+            progressive=args.progressive or None,
         )
     except ToolFault as fault:
         print(f"Failed  : {fault.reason} - {fault.message}", file=sys.stderr)
@@ -228,6 +229,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_speak.add_argument("--no-play", action="store_true", help="Only write the WAV.")
     p_speak.add_argument("--wait", action="store_true", help="Block until playback finishes.")
+    p_speak.add_argument(
+        "--progressive", action="store_true", help="Play chunks as they render (long text)."
+    )
     p_speak.set_defaults(func=_cmd_speak)
 
     return parser

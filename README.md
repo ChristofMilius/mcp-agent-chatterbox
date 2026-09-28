@@ -202,7 +202,7 @@ The main call. Renders text, writes a WAV to the output dir, plays it.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `text` | — | What to say. Required. |
-| `model` | `turbo` | `turbo` \| `multilingual` \| `original` |
+| `model` | `turbo` | `turbo` \| `nano` \| `multilingual` \| `original` |
 | `voice` | — | Reference clip name in the voices dir (filename without extension) |
 | `reference_clip` | — | Path to a wav/mp3/flac, as an alternative to `voice` |
 | `language` | — | ISO 639-1 code, multilingual only |
@@ -217,6 +217,7 @@ The main call. Renders text, writes a WAV to the output dir, plays it.
 | `seed` | random | Reseed torch for a reproducible re-render within the resident session; `0` means random. Not guaranteed byte-identical across a restart |
 | `play_audio` | server setting | `false` writes the file only |
 | `wait` | `false` | Block until playback finishes |
+| `progressive` | server setting | With playback on, play each long-text chunk the moment it renders instead of waiting for the whole utterance |
 | `filename` | generated | Output basename |
 
 Style parameters left unset keep each model's own tuned values rather than a
@@ -231,7 +232,13 @@ rendered in sentence-aligned chunks: Chatterbox's own `generate()` truncates
 long inputs (turbo degrades past roughly 600 characters and comes back shorter
 than a shorter prompt), so a single oversized render would be garbled. The
 chunks share the same voice, style knobs and reference clip, and are stitched
-together with `CHATTERBOX_CHUNK_PAUSE_MS` of silence between them.
+together with `CHATTERBOX_CHUNK_PAUSE_MS` of silence between them. With
+`progressive` (or `CHATTERBOX_PROGRESSIVE=1`) and playback enabled, chunk 1
+starts playing the moment it is rendered while the later chunks are still being
+generated — the first audio lands in about the time of one chunk instead of the
+whole utterance. Each chunk is staged to its own `*.progressive-N.wav` in the
+output dir during playback and removed afterwards; the stitched final file is
+still written as usual.
 
 ```jsonc
 // a quick aside in the stock voice
@@ -416,6 +423,7 @@ All settings are environment variables, read at startup. No secrets.
 | `CHATTERBOX_VOICES_DIR` | `voices` | Where reference clips live |
 | `CHATTERBOX_LOGS_DIR` | `logs` | Rotating log file location |
 | `CHATTERBOX_AUTOPLAY` | `1` | Play audio after writing |
+| `CHATTERBOX_PROGRESSIVE` | `0` | With playback on, play each long-text chunk the moment it renders instead of waiting for the whole utterance |
 | `CHATTERBOX_MAX_CHARS` | `4000` | Reject longer single requests |
 | `CHATTERBOX_MAX_CHUNK_CHARS` | `500` | Long text auto-splits into sentence-aligned chunks of up to this many chars |
 | `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence inserted between concatenated chunks |

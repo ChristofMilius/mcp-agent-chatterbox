@@ -253,6 +253,71 @@ class TestPlayback:
         assert result["playback_note"] == "no audio device"
 
 
+class TestProgressive:
+    LONG = "Alpha one two three four five six. Beta seven eight nine ten eleven. Gamma twelve thirteen."
+
+    def _record_play(self, monkeypatch):
+        calls = []
+
+        def fake_play(*a, **k):
+            calls.append(a[0])
+            return True, None
+
+        monkeypatch.setattr("mcp_agent_chatterbox.speak.play", fake_play)
+        return calls
+
+    def test_single_chunk_ignores_progressive(self, cfg, fake_engine, monkeypatch):
+        calls = self._record_play(monkeypatch)
+        result = run(cfg, fake_engine, progressive=True, play_audio=True)
+        assert result["progressive"] is False
+        assert len(calls) == 1  # the final file, played as always
+
+    def test_streams_chunks_in_order_and_cleans_up(self, cfg, fake_engine, monkeypatch):
+        calls = self._record_play(monkeypatch)
+        cfg.max_chunk_chars = 30
+        result = run(cfg, fake_engine, text=self.LONG, progressive=True, play_audio=True, wait=True)
+        segments = _split_segments(self.LONG, 30)
+        assert len(segments) >= 2
+        assert result["progressive"] is True
+        assert result["played"] is True
+        assert result["chunks"] == len(segments)
+        assert len(calls) == len(segments)
+        # Chunks played in rendering order, back-to-back, no final-file play.
+        assert all(str(c).endswith(f".progressive-{i + 1}.wav") for i, c in enumerate(calls))
+        staged = list(cfg.output_dir.glob("*.progressive-*.wav"))
+        assert staged == []  # played chunks are removed again
+        finals = list(cfg.output_dir.glob("*.wav"))
+        assert len(finals) == 1  # only the stitched artifact remains
+
+    def test_requires_playback(self, cfg, fake_engine, monkeypatch):
+        calls = self._record_play(monkeypatch)
+        cfg.max_chunk_chars = 30
+        result = run(
+            cfg, fake_engine, text=self.LONG, progressive=True, play_audio=False, wait=True
+        )
+        assert result["progressive"] is False
+        assert calls == []
+        assert list(cfg.output_dir.glob("*.progressive-*.wav")) == []
+
+    def test_enabled_by_config_and_wait_joins(self, cfg, fake_engine, monkeypatch):
+        calls = self._record_play(monkeypatch)
+        cfg.max_chunk_chars = 30
+        cfg.progressive = True
+        result = run(cfg, fake_engine, text=self.LONG, play_audio=True, wait=True)
+        assert result["progressive"] is True
+        assert len(calls) == len(_split_segments(self.LONG, 30))
+
+    def test_failed_chunks_do_not_stop_cleanup(self, cfg, fake_engine, monkeypatch):
+        monkeypatch.setattr(
+            "mcp_agent_chatterbox.speak.play",
+            lambda *a, **k: (False, "no audio device"),
+        )
+        cfg.max_chunk_chars = 30
+        result = run(cfg, fake_engine, text=self.LONG, progressive=True, play_audio=True, wait=True)
+        assert result["progressive"] is True
+        assert list(cfg.output_dir.glob("*.progressive-*.wav")) == []
+
+
 class TestStyleParameters:
     def test_explicit_values_forwarded(self, cfg, fake_engine):
         run(cfg, fake_engine, exaggeration=0.4, cfg_weight=0.7, temperature=0.9)
