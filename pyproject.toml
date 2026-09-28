@@ -9,19 +9,20 @@ authors = [
 license = "MIT"
 # 3.13 only, on purpose. chatterbox-tts pins torch==2.6.0 on Python < 3.14 but
 # torch>=2.9.0 on 3.14+, so an open-ended range cannot be resolved against a
-# single torch pin. 3.13 is the widest-tested interpreter that works with the
-# 2.6.0 CUDA wheels.
+# single torch pin. The validation work (decoder, torchaudio reference path,
+# full test suite) was done on 3.13 with the cu132 wheels pinned below.
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "mcp[cli]>=2.0.0",
     "chatterbox-tts",
-    # Pinned to the exact versions chatterbox-tts itself requires, so that
-    # redirecting them to the CUDA wheel index below cannot fork the
-    # resolution. chatterbox-tts hard-pins torch/torchaudio 2.6.0 on
-    # Python < 3.14, and its S3Gen decoder is not validated against
-    # newer torch releases.
-    "torch==2.6.0",
-    "torchaudio==2.6.0",
+    # Pinned to the exact versions the live validation ran on, so that
+    # redirecting torch to the CUDA wheel index below cannot fork the
+    # resolution. torch/torchaudio were lifted from chatterbox-tts's 2.6.0
+    # pins to the modern pair (torch 2.14 + torchaudio 2.11, which now ships
+    # from PyPI as a plain wheel) after the S3Gen decoder, the multilingual
+    # reference-clip path and the full test suite were re-validated onboard.
+    "torch==2.14.0",
+    "torchaudio==2.11.0",
     "setuptools<81",
 ]
 
@@ -37,10 +38,10 @@ dev = [
 
 # Chatterbox on Windows: the default PyPI torch wheel is already a CUDA build,
 # but pinning the official CUDA index makes the accelerator explicit and
-# reproducible instead of an accident of the platform. cu124 is the newest
-# CUDA index that carries the 2.6.0 release chatterbox-tts requires; cu126/cu128
-# only exist from torch 2.7 onwards. A driver of 525+ is needed for cu124, so
-# this stays compatible with newer drivers (CUDA is backward compatible).
+# reproducible instead of an accident of the platform. cu132 carries the
+# validated 2.14.0 release; it needs a driver from the CUDA 13.x era (this
+# machine runs driver 617.14). torchaudio no longer ships per-CUDA indices —
+# it lives on PyPI as a plain wheel that pairs with any matching torch.
 [tool.uv.sources]
 # Upstream snapshot, not the PyPI release. chatterbox-tts has shipped nothing
 # since 0.1.7 (2026-03-26), but master carries what the PyPI wheel lacks:
@@ -53,26 +54,27 @@ dev = [
 # float64 upcast (see engine._harden_reference_dtype) — regenerate that shim
 # decision whenever the snapshot moves.
 chatterbox-tts = { git = "https://github.com/resemble-ai/chatterbox.git", rev = "5de7a54aa4e5e2baadb0182dde554908b48b85c2" }
-torch = { index = "pytorch-cu124" }
-torchaudio = { index = "pytorch-cu124" }
+torch = { index = "pytorch-cu132" }
 
-# Override chatterbox-tts's hard pins (==5.2.0 / ==0.29.0 / ==0.5.3) with the
-# dependabot bump. Its S3Gen decoder and flow-matching frontend were validated
-# against these releases by the live renders + full test suite; the hard pins
-# are the snapshot author's floor, not an upper bound.
-# transformers stays at 5.2.0 — every 5.3+ requires `torch.float8_e8m0fnu`, a
-# dtype that only exists from torch 2.8, and torch 2.6.0 is itself a hard
-# ceiling (cu124 wheels stop there; the decoder is not validated on newer
-# torch). torch/torchaudio therefore stay at 2.6.0.
+# Override chatterbox-tts's hard pins (torch/torchaudio ==2.6.0, transformers
+# ==5.2.0, diffusers ==0.29.0, safetensors ==0.5.3) with the uplifted envelope.
+# torch 2.14 + torchaudio 2.11 + transformers 5.10.4 + diffusers 0.38.0 +
+# safetensors 0.8.0 were validated together on this machine (scratch venv,
+# live renders on nano/turbo/multilingual including the reference-clip path)
+# before this migration. The hard pins are the snapshot author's floor, not an
+# upper bound; the overrides are the proof, not the presumption.
 [tool.uv]
 override-dependencies = [
+    "torch==2.14.0+cu132",
+    "torchaudio==2.11.0",
+    "transformers==5.10.4",
     "diffusers==0.38.0",
     "safetensors==0.8.0",
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu124"
-url = "https://download.pytorch.org/whl/cu124"
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
 explicit = true
 
 [build-system]

@@ -64,7 +64,7 @@ Quick CUDA check:
 uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-Expect `2.6.0+cu124 True`.
+Expect `2.14.0+cu132 True`.
 
 ### Why `setuptools<81` is pinned
 

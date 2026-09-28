@@ -5,15 +5,19 @@ Chatterbox's generate() hands back a torch tensor on CPU, shaped (1, N) for
 every one of the four models. Saving and measuring are wrapped here so the
 tool layer never has to care about rank or device.
 
-torchaudio is imported lazily inside the functions: it is a hard dependency of
-chatterbox-tts, but importing it costs a second and a status call must not pay
-that.
+WAV writing is done with the stdlib `wave` module: the waveform is mono
+PCM16 at a fixed sample rate, which is precisely writable without any media
+backend. torchaudio's save() used to serve, but torchaudio 2.11+ moved all
+I/O to the separate torchcodec package, and a flat PCM16 write does not
+justify a new dependency.
 """
 
 from __future__ import annotations
 
 import logging
 from pathlib import Path
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +55,17 @@ def write_wav(wav, sample_rate: int, path: str | Path) -> Path:
 
     Returns the resolved path actually written.
     """
-    import torchaudio  # noqa: PLC0415
+    import wave
 
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    torchaudio.save(str(target), _as_batched_tensor(wav), sample_rate)
+    frames = np.ascontiguousarray(_as_batched_tensor(wav).squeeze(0).cpu().numpy(), dtype=np.float32)
+    pcm = np.clip(np.round(frames * 32767), -32768, 32767).astype(np.int16)
+    with target.open("wb") as fh, wave.open(fh, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sample_rate)
+        w.writeframes(pcm.tobytes())
     logger.info("[audio] wrote %s (%d samples @ %d Hz)", target.name, num_samples(wav), sample_rate)
     return target
 

@@ -55,6 +55,7 @@ It quantifies one artefact class, not overall quality.
 from __future__ import annotations
 
 import logging
+import wave
 from pathlib import Path
 from typing import Any
 
@@ -76,9 +77,15 @@ def _probe(path: Path) -> dict[str, Any]:
 
     Duration is the property that actually predicts clone quality (see the
     module docstring), so it belongs in the listing rather than being something
-    the caller has to go and measure. torchaudio.info() reads container headers
-    only. Anything unreadable -- an exotic codec, a truncated file -- degrades to
-    nulls rather than failing the listing, because the clip may still be usable.
+    the caller has to go and measure. Header reads only: `wave` for PCM WAV
+    (stdlib, exact) and soundfile.info for everything else (mp3/flac/ogg/m4a
+    container metadata, no decode). Anything unreadable -- an exotic codec, a
+    truncated file -- degrades to nulls rather than failing the listing,
+    because the clip may still be usable.
+
+    (torchaudio.info() used to serve here, but torchaudio 2.11+ moved all I/O
+    to the separate torchcodec package, and a container header does not
+    justify a new dependency.)
     """
     probed: dict[str, Any] = {
         "duration_s": None,
@@ -86,20 +93,22 @@ def _probe(path: Path) -> dict[str, Any]:
         "channels": None,
     }
     try:
-        from torchaudio import info as ta_info  # noqa: PLC0415 -- off the hot path
+        import soundfile as sf  # noqa: PLC0415 -- off the hot path
 
-        meta = ta_info(str(path))
+        meta = sf.info(str(path))
+        probed["sample_rate"] = int(meta.samplerate)
+        probed["channels"] = int(meta.channels)
+        if meta.samplerate:
+            probed["duration_s"] = round(meta.frames / meta.samplerate, 2)
     except Exception as exc:  # noqa: BLE001 -- header probing is best effort
-        logger.debug("[voices] could not probe %s: %s", path.name, exc)
-        return probed
-
-    try:
-        probed["sample_rate"] = int(meta.sample_rate)
-        probed["channels"] = int(meta.num_channels)
-        if meta.sample_rate:
-            probed["duration_s"] = round(meta.num_frames / meta.sample_rate, 2)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[voices] odd metadata in %s: %s", path.name, exc)
+        try:
+            with wave.open(str(path), "rb") as w:
+                probed["channels"] = w.getnchannels()
+                probed["sample_rate"] = w.getframerate()
+                if w.getframerate():
+                    probed["duration_s"] = round(w.getnframes() / w.getframerate(), 2)
+        except Exception:
+            logger.debug("[voices] could not probe %s: %s", path.name, exc)
     return probed
 
 
