@@ -269,16 +269,31 @@ class ChatterboxEngine:
             except Exception:  # noqa: BLE001
                 cuda_available = None
 
-        # Resolve the device only if nothing has pinned it yet. CUDA first:
-        # the earlier version of this block tested the fallback before the
-        # CUDA branch, which set the device to "cpu" and made the CUDA branch
-        # unreachable.
+        # Defer to resolve_device() so status() cannot disagree with the loader
+        # about which card the weights land on. This block used to re-derive the
+        # device from the emptiest-card heuristic alone, ignoring
+        # CHATTERBOX_GPU_INDEX: since resolve_device() short-circuits on an
+        # already-set _device, calling tts_status() first (the documented step 1
+        # of every workflow) cached cuda:0 and the pin was silently defeated for
+        # the rest of the session. One implementation, one answer.
+        #
+        # resolve_device() raises ToolFault when CHATTERBOX_GPU_INDEX is out of
+        # range, and status() must stay a probe that never throws -- a status
+        # call that crashed would take down the very tool a user reaches for
+        # when the pin is wrong. So the failure falls back to the heuristic.
         if self._device is None:
-            if cuda_available and device_count:
-                best = self._emptiest_cuda(_load_torch())
-                self._device = f"cuda:{best}" if best is not None else "cpu"
-            else:
-                self._device = "cpu"
+            try:
+                self.resolve_device()
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[engine] falling back to the emptiest-card heuristic for status()",
+                    exc_info=True,
+                )
+                if cuda_available and device_count:
+                    best = self._emptiest_cuda(_load_torch())
+                    self._device = f"cuda:{best}" if best is not None else "cpu"
+                else:
+                    self._device = "cpu"
 
         if device_count and self._device and self._device.startswith("cuda"):
             idx = self.cuda_index()

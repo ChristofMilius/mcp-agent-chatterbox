@@ -122,6 +122,29 @@ class TestGpuIndexPin:
         assert exc.value.reason == "gpu_index_out_of_range"
         assert "2" in exc.value.message
 
+    def test_status_first_does_not_defeat_the_pin(self, monkeypatch, fake_torch):
+        # status() used to re-derive the device from the emptiest-card heuristic
+        # alone and cache it, and resolve_device() short-circuits on an already
+        # set _device. So the documented "tts_status() first" step silently
+        # overrode the pin for the rest of the session. Card 0 is deliberately
+        # the emptiest, so the heuristic and the pin disagree.
+        fake_torch(available=True, count=2, free_mb=[9000, 2000])
+        e = engine_with(monkeypatch, gpu_index=1)
+        assert e.status()["device"] == "cuda:1"
+        assert e.resolve_device() == "cuda:1"
+        assert [g["index"] for g in e.gpu_report() if g["selected"]] == [1]
+
+    def test_status_survives_an_out_of_range_pin(self, monkeypatch, fake_torch, caplog):
+        # status() is the probe a user reaches for when the pin is wrong. It
+        # must report something rather than raise, or the one tool that could
+        # explain the misconfiguration is the tool that breaks.
+        fake_torch(available=True, count=2, free_mb=[9000, 2000])
+        e = engine_with(monkeypatch, gpu_index=5)
+        with caplog.at_level(logging.WARNING):
+            st = e.status()
+        assert st["device"] in {"cuda:0", "cuda:1", "cpu"}
+        assert any("heuristic" in r.message for r in caplog.records)
+
 
 class TestCudaIndex:
     def test_none_on_cpu(self, monkeypatch, fake_torch):
