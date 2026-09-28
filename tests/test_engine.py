@@ -273,9 +273,10 @@ class TestRegistry:  # noqa: N801 — the registry is imported into this test mo
         assert "top_k" not in multi["tunable"]
         assert "norm_loudness" not in multi["tunable"]
 
-    def test_multilingual_repetition_penalty_default_is_2_0(self):
-        # mtl_tts.generate() defaults to 2.0; the registry documents it.
-        assert MODEL_SPECS["multilingual"].defaults["repetition_penalty"] == 2.0
+    def test_multilingual_repetition_penalty_default_is_1_2(self):
+        # Mirrors the upstream-snapshot default (mtl_tts.generate). The PyPI
+        # 0.1.7 release used 2.0; master retuned it to 1.2.
+        assert MODEL_SPECS["multilingual"].defaults["repetition_penalty"] == 1.2
 
 
 class FakeModel:

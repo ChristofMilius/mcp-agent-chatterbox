@@ -71,9 +71,11 @@ This is the one dependency in `pyproject.toml` that looks arbitrary, so here is
 the whole story.
 
 The **turbo** model embeds a copy of [Perth](https://github.com/resemble-ai/perth),
-Resemble AI's audio watermarking library. That copy is vendored inside the
-`chatterbox-tts` sdist — it ships as loose files with no package metadata, and
-there is no `perth-watermarker` distribution on PyPI to replace it with.
+Resemble AI's audio watermarking library. In the PyPI wheel that copy is vendored
+inside the `chatterbox-tts` sdist — it ships as loose files with no package
+metadata. With the git snapshot (see the next section) it instead resolves as a
+proper `resemble-perth` git dependency; either way the code path is the same
+`perth_net` package using `pkg_resources`.
 
 `perth/perth_net/__init__.py` starts with:
 
@@ -104,6 +106,42 @@ Consequences worth knowing:
   touch Perth and load fine on any setuptools.
 - If a future `chatterbox-tts` release fixes the vendored import, drop the pin.
   The symptom to watch for is the `TypeError` above returning.
+
+### Why `chatterbox-tts` comes from a git snapshot
+
+We deliberately do **not** install the PyPI release. `chatterbox-tts` has
+shipped nothing since 0.1.7 (2026-03-26), but upstream master carries what the
+wheel lacks:
+
+- **real v2/v3 multilingual checkpoint selection.** The 0.1.7 wheel's
+  `mtl_tts.from_pretrained()` takes no `t3_model` argument, so our `t3_model`
+  knob would `TypeError` the moment it was used. Master maps `v2`/`v3` to
+  `t3_mtl23ls_v2/v3.safetensors`.
+- **the 500M EOS-noise trim** — the final speech token decodes to ~40 ms of
+  noise before EOS and is dropped from the wav.
+- **the HF Xet-download fallback** — the Xet storage backend crashes on some
+  environments; master retries over the HTTP/LFS path automatically.
+
+`pyproject.toml` pins the snapshot to an exact commit (`rev = 5de7a54a…`) under
+`[tool.uv.sources]`, so the environment is reproducible. To pick up newer
+upstream work, bump the `rev` deliberately and re-run the three models — then
+re-examine the dtype-shim reasoning, because upstream still carries the
+`norm_loudness` float64 upcast that `engine._harden_reference_dtype()` exists
+to contain. The snapshot also builds `resemble-perth` from git (the watermarker
+behind turbo), replacing the loose vendored copy the 0.1.7 wheel shipped.
+
+Consequences worth knowing:
+
+- Master keeps version `0.1.7` — upstream never bumps it, so the git `rev` is
+  the package's only reliable identity. Do not "upgrade" back to a PyPI
+  `chatterbox-tts>=0.1.7`; you would silently lose v3, the trim, and the Xet
+  fallback.
+- The `t3_model` knob is now real: `v2` (default) or `v3`. v3 is a separate
+  multigigabyte checkpoint downloaded on first use.
+- Master retuned the multilingual `repetition_penalty` default from 2.0 to 1.2;
+  the registry and its test mirror that.
+- The dtype shim is independent of this snapshot — the bug exists in both the
+  wheel and master, so the shim stays either way.
 
 ## Model weights
 
@@ -467,6 +505,19 @@ tracebacks go there, never into the model's context. The console handler writes
 to stderr with `errors="replace"`, so a character the Windows console code page
 cannot represent degrades to `?` instead of raising or garbling the line —
 Chatterbox logs a `✅` of its own, so this is not hypothetical.
+
+**`uv sync` fails with file-lock/`Access denied` errors (Windows).** The running
+MCP server holds `Scripts/mcp-agent-chatterbox.exe` and the site-packages files
+it imported, so a mid-session sync cannot uninstall them. Worse, a sync that
+starts anyway and dies halfway can leave a **husked package** — the metadata
+looks installed but the package directory lost its `__init__.py` and most files
+(a real incident gutted `coverage` this way, and every model then failed to
+load with `AttributeError: module 'coverage' has no attribute 'types'`, because
+`librosa` → `numba` imports it for tracing). Restart opencode so the server
+process exits, then redo `uv sync`. If the husk is already there, repair it in
+place: `uv pip install --force-reinstall coverage==7.16.1` (or the husked
+package's own version) before relying on the environment. `import librosa`
+succeeding is the cheapest canary for this whole chain.
 
 ## Development
 

@@ -14,7 +14,7 @@ license = "MIT"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "mcp[cli]>=2.0.0",
-    "chatterbox-tts>=0.1.7",
+    "chatterbox-tts",
     # Pinned to the exact versions chatterbox-tts itself requires, so that
     # redirecting them to the CUDA wheel index below cannot fork the
     # resolution. chatterbox-tts hard-pins torch/torchaudio 2.6.0 on
@@ -42,6 +42,17 @@ dev = [
 # only exist from torch 2.7 onwards. A driver of 525+ is needed for cu124, so
 # this stays compatible with newer drivers (CUDA is backward compatible).
 [tool.uv.sources]
+# Upstream snapshot, not the PyPI release. chatterbox-tts has shipped nothing
+# since 0.1.7 (2026-03-26), but master carries what the PyPI wheel lacks:
+#   - real v2/v3 multilingual checkpoint selection. 0.1.7's mtl_tts.from_pretrained
+#     accepts no t3_model argument, so our t3_model knob would TypeError;
+#   - the 500M EOS-noise-token trim (~40 ms of noise before EOS);
+#   - the HF Xet-download fallback.
+# The rev is a deliberate pin for reproducibility. Bump it in lockstep with the
+# next intentional sync of the snapshot. Upstream still carries the norm_loudness
+# float64 upcast (see engine._harden_reference_dtype) — regenerate that shim
+# decision whenever the snapshot moves.
+chatterbox-tts = { git = "https://github.com/resemble-ai/chatterbox.git", rev = "5de7a54aa4e5e2baadb0182dde554908b48b85c2" }
 torch = { index = "pytorch-cu124" }
 torchaudio = { index = "pytorch-cu124" }
 

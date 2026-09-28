@@ -137,7 +137,7 @@ MODEL_SPECS: dict[str, ModelSpec] = {
             {"repetition_penalty", "min_p", "top_p", "exaggeration", "cfg_weight", "temperature"}
         ),
         defaults={
-            "repetition_penalty": 2.0,
+            "repetition_penalty": 1.2,
             "min_p": 0.05,
             "top_p": 1.0,
             "exaggeration": 0.5,
