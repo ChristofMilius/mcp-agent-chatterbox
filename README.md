@@ -255,10 +255,12 @@ the trigger rule ("when the user asks for a spoken reply, call `speak()`"),
 so any client sees it in the tool schema. Some harnesses additionally load
 **Agent Skills** — a `SKILL.md` file with workflow instructions — which gives
 a small local model much more to hold on to: what counts as a voice request,
-that one instruction persists for the whole exchange, spoken register (no
-markdown/lists/paths), which model and voice to pick (prefer `nano` for
-English; ask the user which voice once, then remember it), how to summarize
-a long answer for the ear, and the failure modes to avoid retrying.
+that one instruction persists for the whole exchange, that the spoken text
+is the model's own answer (never a repetition of the user's message),
+spoken register (no markdown/lists/paths), which model and voice to pick
+(prefer `nano` for English; ask the user which voice once, then remember
+it, unless the server configures a default), how to summarize a long
+answer for the ear, and the failure modes to avoid retrying.
 
 This repo ships one at [`skills/voice-output/SKILL.md`](skills/voice-output/SKILL.md).
 

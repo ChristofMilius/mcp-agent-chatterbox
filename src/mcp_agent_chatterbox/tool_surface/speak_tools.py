@@ -60,9 +60,12 @@ def register(server, ctx) -> None:
         "answer aloud", "reply by voice", "say it out loud", and the like --
         put your ENTIRE reply into text= and call this tool. Do not reply in
         plain text alone while the user is expecting voice; the spoken output
-        is the deliverable. Keep the text in spoken register: full sentences,
-        no markdown, no lists, no paths or code. One instruction to speak
-        stays in effect for the whole exchange until the user says stop.
+        is the deliverable. text= is YOUR generated reply -- never copy the
+        user's message into it; the only exception is when they quoted exact
+        words to read aloud. Keep the text in spoken register: full
+        sentences, no markdown, no lists, no paths or code. One instruction
+        to speak stays in effect for the whole exchange until the user says
+        stop.
         MODEL: for English, prefer model="nano" (110M, same built-in voice
         and inline tags as turbo, lighter and quicker — pass it explicitly).
         VOICE: if the user has not named a voice, ask once which voice to

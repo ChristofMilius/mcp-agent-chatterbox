@@ -1,6 +1,6 @@
 ---
 name: voice-output
-description: Use when the user asks you to speak, answer aloud, reply by voice, use the voice/speech mode, or says anything like "say it", "tell me out loud", or "respond with voice". Teaches the agent to always route the spoken reply through the chatterbox MCP speak() tool instead of only printing text. Applies to the mcp-agent-chatterbox MCP server (speak, tts_status, list_voices, stop_speech, tts_unload).
+description: Use when the user asks you to speak, answer aloud, reply by voice, use the voice/speech mode, or says anything like "say it", "tell me out loud", or "respond with voice". Teaches the agent to always route the spoken reply through the chatterbox MCP speak() tool instead of only printing text — and to speak its own generated answer, never a repetition of the user's message. Applies to the mcp-agent-chatterbox MCP server (speak, tts_status, list_voices, stop_speech, tts_unload).
 ---
 
 # Voice output with Chatterbox
@@ -25,6 +25,32 @@ it.
   voice mode was established earlier in the conversation, stay in voice
   mode. Mode persists until the user says stop.
 - One instruction to speak covers the whole exchange, not just one turn.
+
+## The most important rule: speak YOUR answer, never the user's words
+
+`text=` carries the reply **you** generated. The user's message is the
+question; the text you speak is the answer. **Never pass the user's own
+words, never copy their message, never echo the question back.**
+
+- **Wrong:** user says *"Reply by voice: what time is it?"* and you call
+  `speak(text="Reply by voice: what time is it?")` — the speaker reads the
+  question back. That is a failed turn.
+- **Right:** `speak(text="It is just past four thirty in the afternoon.")`
+  — your own answer, in your own words.
+
+**The one exception:** the user quotes exact text and asks you to read it
+aloud ("say exactly: …", "read this out loud: …"). Then `text=` is that
+quoted wording, verbatim, with the quotes removed. If the user's words look
+like a question, an order, or a prompt, they are the input you answer — not
+the output you speak.
+
+**Pre-flight check before every `speak()` call — run through all three:**
+
+1. Did I write this text myself? (Yes → go on. It is a copy of the user's
+   message → **stop and rewrite it as your answer.**)
+2. Does it answer what the user asked? (It should be what you would have
+   typed as your reply, just spoken.)
+3. Would it sound natural read aloud? (Full sentences, no markdown.)
 
 ## Choosing what to say
 
