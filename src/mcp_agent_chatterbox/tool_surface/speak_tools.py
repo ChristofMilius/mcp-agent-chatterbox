@@ -56,9 +56,25 @@ def register(server, ctx) -> None:
         Speak text aloud with Chatterbox on the local GPU, save it as a WAV, and
         by default play it through the system audio device.
 
+        WHEN TO CALL: whenever the user asks for a spoken reply -- "speak",
+        "answer aloud", "reply by voice", "say it out loud", and the like --
+        put your ENTIRE reply into text= and call this tool. Do not reply in
+        plain text alone while the user is expecting voice; the spoken output
+        is the deliverable. Keep the text in spoken register: full sentences,
+        no markdown, no lists, no paths or code. One instruction to speak
+        stays in effect for the whole exchange until the user says stop.
+        MODEL: for English, prefer model="nano" (110M, same built-in voice
+        and inline tags as turbo, lighter and quicker — pass it explicitly).
+        VOICE: if the user has not named a voice, ask once which voice to
+        use before the first spoken reply, then keep that voice for the
+        rest of the exchange — unless the user is waiting on the content,
+        in which case speak in the built-in voice and offer the voice
+        choice alongside the answer.
+
         model:   "turbo" (default, 350M, English, no reference clip needed,
                  supports inline [laugh]/[chuckle] tags), "nano" (110M,
-                 turbo's smaller sibling, built-in voice, tightest budget),
+                 turbo's smaller sibling, built-in voice, tightest budget —
+                 PREFERRED for English replies),
                  "multilingual" (500M, 23 languages, requires a reference clip)
                  or "original" (500M, English, requires a reference clip).
         voice:   name of a reference clip in the voices directory (its filename

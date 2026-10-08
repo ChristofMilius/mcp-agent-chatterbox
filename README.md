@@ -197,6 +197,34 @@ Add to `~/.config/opencode/opencode.jsonc`:
 Restart opencode. The server speaks stdio, loads no weights at startup, and
 stays responsive while the model is idle.
 
+## Skill: teaching an agent to answer by voice
+
+The MCP server's `instructions` field and the `speak` tool description carry
+the trigger rule ("when the user asks for a spoken reply, call `speak()`"),
+so any client sees it in the tool schema. Some harnesses additionally load
+**Agent Skills** — a `SKILL.md` file with workflow instructions — which gives
+a small local model much more to hold on to: what counts as a voice request,
+that one instruction persists for the whole exchange, spoken register (no
+markdown/lists/paths), which model and voice to pick (prefer `nano` for
+English; ask the user which voice once, then remember it), how to summarize
+a long answer for the ear, and the failure modes to avoid retrying.
+
+This repo ships one at [`skills/voice-output/SKILL.md`](skills/voice-output/SKILL.md).
+
+**Install in LM Studio Bionic:** Settings → Skills → add
+`skills/voice-output/SKILL.md`, or ask Bionic to install the skill from this
+repo's URL. Trigger it explicitly with `@voice-output` in the composer, or
+invoke it with a phrase like "reply by voice from now on".
+
+**Install in opencode:** copy the folder into the global skills directory:
+
+```powershell
+Copy-Item -Recurse skills\voice-output $env:USERPROFILE\.config\opencode\skills\
+```
+
+Any other harness that speaks the Agent Skills format (Codex, Claude Code,
+and compatible tools) can consume the same file.
+
 ## The opencode plugin
 
 `.opencode/plugins/tts.js` adds a `speak` tool and a `/speak` command to

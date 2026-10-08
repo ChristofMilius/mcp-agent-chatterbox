@@ -17,6 +17,8 @@
 !/.opencode/plugins/**
 !/.opencode/commands/
 !/.opencode/commands/**
+!/skills/
+!/skills/**
 
 # Never commit real output, model weights or reference voices.
 /tts_output/
