@@ -26,6 +26,20 @@ it.
   mode. Mode persists until the user says stop.
 - One instruction to speak covers the whole exchange, not just one turn.
 
+## Voice mode: ON means every reply is spoken
+
+"Reply by voice", "speak from now on", "voice mode", "answer aloud" — any
+of these turns voice mode **ON**. While it is on, **every substantive
+reply is a `speak()` call**. There is nothing else to decide: voice mode
+ON = the answer comes out of the speaker.
+
+- The only text-only turns allowed while voice mode is on are a one-line
+  prelude ("Speaking now:") and the single "which voice?" question.
+- Voice mode stays ON until the user says stop. Do not drop back to
+  plain text after a few turns "because the request only applied once".
+- If the user never turned voice mode on, reply in text as usual. If
+  they turned it on, speak. There is no middle state to judge.
+
 ## The most important rule: speak YOUR answer, never the user's words
 
 `text=` carries the reply **you** generated. The user's message is the

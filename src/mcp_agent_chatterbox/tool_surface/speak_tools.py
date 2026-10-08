@@ -65,7 +65,8 @@ def register(server, ctx) -> None:
         words to read aloud. Keep the text in spoken register: full
         sentences, no markdown, no lists, no paths or code. One instruction
         to speak stays in effect for the whole exchange until the user says
-        stop.
+        stop. Voice mode ON means EVERY reply is spoken, not just the
+        first.
         MODEL: for English, prefer model="nano" (110M, same built-in voice
         and inline tags as turbo, lighter and quicker — pass it explicitly).
         VOICE: if the user has not named a voice, ask once which voice to
