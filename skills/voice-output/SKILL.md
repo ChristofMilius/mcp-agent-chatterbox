@@ -54,9 +54,14 @@ the preference does not depend on the server's default.
 
 ## Picking the voice — ask once, then remember
 
-Unless the user already named a voice in this conversation ("use the voice
-called <name>"), **ask which voice they want before the first spoken reply**
-of the exchange:
+**If the server has a configured default voice** (`CHATTERBOX_VOICE`,
+reported as `default_voice` by `tts_status()`), skip the question entirely:
+use it silently on every `speak()` call. `list_voices()` is only needed when
+no default is configured.
+
+Otherwise, unless the user already named a voice in this conversation ("use
+the voice called <name>"), **ask which voice they want before the first
+spoken reply** of the exchange:
 
 1. Call `list_voices()` to get the real names (do not invent them).
 2. Ask one short text question listing the options — this question is the

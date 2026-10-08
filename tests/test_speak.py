@@ -196,6 +196,40 @@ class TestReferenceClipResolution:
         assert exc.value.reason == "unsupported_reference_format"
 
 
+class TestDefaultVoice:
+    def test_used_when_the_call_names_no_voice(self, cfg, fake_engine, narrator):
+        # CHATTERBOX_VOICE behaves exactly as if the caller had passed voice=.
+        cfg.voice = narrator
+        result = run(cfg, fake_engine)
+        assert fake_engine.calls[0]["reference_clip"].endswith("narrator.wav")
+        assert result["voice"] == "narrator"
+
+    def test_explicit_voice_wins(self, cfg, fake_engine, narrator):
+        cfg.voice = "other"
+        (cfg.voices_dir / "other.wav").write_bytes(b"RIFF")
+        run(cfg, fake_engine, voice=narrator)
+        assert fake_engine.calls[0]["reference_clip"].endswith("narrator.wav")
+
+    def test_explicit_clip_wins_without_ambiguity(self, cfg, fake_engine, narrator, tmp_path):
+        # An explicit reference_clip must not collide with the default voice:
+        # voice= and reference_clip= are exclusive, and a caller who brought
+        # their own clip means it.
+        cfg.voice = narrator
+        clip = tmp_path / "mine.wav"
+        clip.write_bytes(b"RIFF")
+        run(cfg, fake_engine, reference_clip=str(clip))
+        assert fake_engine.calls[0]["reference_clip"] == str(clip)
+
+    def test_missing_default_fails_fast(self, cfg, fake_engine, narrator):
+        # A default voice that is not in the voices dir must not silently
+        # render in another voice; the call fails with voice_not_found.
+        cfg.voice = "ghost"
+        with pytest.raises(ToolFault) as exc:
+            run(cfg, fake_engine)
+        assert exc.value.reason == "voice_not_found"
+        assert fake_engine.calls == []
+
+
 class TestOutput:
     def test_writes_a_wav(self, cfg, fake_engine):
         result = run(cfg, fake_engine)

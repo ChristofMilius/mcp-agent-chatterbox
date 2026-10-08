@@ -186,7 +186,31 @@ Add to `~/.config/opencode/opencode.jsonc`:
         "mcp-agent-chatterbox", "serve"
       ],
       "environment": {
-        "CHATTERBOX_MODEL": "turbo"
+        // Which model speak() uses when a call names none.
+        // No reference clip is needed for turbo/nano, which both have a
+        // built-in voice and are faster to load than the 500M models.
+        "CHATTERBOX_MODEL": "turbo",
+
+        // Default reference clip when a call names neither voice= nor
+        // reference_clip= (optional). Resolved like any other voice name;
+        // a typo fails fast with voice_not_found, it never silently
+        // renders in another voice.
+        "CHATTERBOX_VOICE": "<a name from list_voices>",
+
+        // The multi-GPU box: pin which card TTS uses. Doctor shows which
+        // one LM Studio is not sitting on.
+        "CHATTERBOX_GPU_INDEX": "0",
+
+        // Play the audio after writing it (1/0/true/false; default on).
+        "CHATTERBOX_AUTOPLAY": "1",
+
+        // Free-VRAM floor (MiB) for a model-load attempt.
+        "CHATTERBOX_VRAM_MB": "4096",
+
+        // WAVs and logs; relative paths resolve against the project root,
+        // never the process CWD.
+        "CHATTERBOX_OUTPUT_DIR": "tts_output",
+        "CHATTERBOX_LOGS_DIR": "logs"
       },
       "enabled": true
     }
@@ -194,8 +218,35 @@ Add to `~/.config/opencode/opencode.jsonc`:
 }
 ```
 
-Restart opencode. The server speaks stdio, loads no weights at startup, and
-stays responsive while the model is idle.
+Every setting from the [Configuration](#configuration) table can go in that
+`environment` block. Nothing is loaded at startup, so an `enabled: true`
+server stays idle until a tool call arrives.
+
+**LM Studio Bionic / Claude Desktop / other clients:** the same command and
+environment work in their own config format — strict JSON (no comments),
+`command` split from `args`, and the environment named `env`:
+
+```json
+{
+  "mcpServers": {
+    "mcp-agent-chatterbox": {
+      "command": "uv",
+      "args": [
+        "run", "--directory", "<absolute path to this repo>",
+        "mcp-agent-chatterbox", "serve"
+      ],
+      "env": {
+        "CHATTERBOX_MODEL": "turbo",
+        "CHATTERBOX_VOICE": "<a name from list_voices>",
+        "CHATTERBOX_GPU_INDEX": "1"
+      }
+    }
+  }
+}
+```
+
+Restart the client. The server speaks stdio, loads no weights at startup,
+and stays responsive while the model is idle.
 
 ## Skill: teaching an agent to answer by voice
 
@@ -246,7 +297,7 @@ The main call. Renders text, writes a WAV to the output dir, plays it.
 |---|---|---|
 | `text` | — | What to say. Required. |
 | `model` | `turbo` | `turbo` \| `nano` \| `multilingual` \| `original` |
-| `voice` | — | Reference clip name in the voices dir (filename without extension) |
+| `voice` | server setting (`CHATTERBOX_VOICE`) | Reference clip name in the voices dir (filename without extension). Required for multilingual/original |
 | `reference_clip` | — | Path to a wav/mp3/flac, as an alternative to `voice` |
 | `language` | — | ISO 639-1 code, multilingual only |
 | `t3_model` | `v2` | `v2` \| `v3`, multilingual only |
@@ -299,8 +350,8 @@ still written as usual.
 
 Runtime readiness without loading anything: packages, torch/CUDA versions,
 resolved device, free VRAM per GPU, resident model, available models, the
-multilingual language list, and the tags turbo understands. Use it as a
-preflight.
+configured default voice (`CHATTERBOX_VOICE`), the multilingual language
+list, and the tags turbo understands. Use it as a preflight.
 
 ### `tts_unload`
 
@@ -460,6 +511,7 @@ All settings are environment variables, read at startup. No secrets.
 | Variable | Default | Meaning |
 |---|---|---|
 | `CHATTERBOX_MODEL` | `turbo` | Model used when `speak` names none |
+| `CHATTERBOX_VOICE` | unset | Default reference clip (name in the voices dir) used when a `speak` call names neither `voice=` nor `reference_clip=`. Skips the tool-level `reference_clip_required` for multilingual/original, and applies to turbo/nano too. A name that does not exist fails fast with `voice_not_found` — never a silent substitution |
 | `CHATTERBOX_DEVICE` | `auto` | `auto` \| `cpu` \| `cuda` \| `cuda:N` |
 | `CHATTERBOX_GPU_INDEX` | unset | Pin a CUDA ordinal. Overrides the `auto` heuristic |
 | `CHATTERBOX_OUTPUT_DIR` | `tts_output` | Where WAVs are written |

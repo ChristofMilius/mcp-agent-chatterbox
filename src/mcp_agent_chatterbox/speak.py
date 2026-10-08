@@ -329,6 +329,13 @@ def speak_once(
     if t3 and spec.key != "multilingual":
         t3 = None
 
+    # A configured default voice (CHATTERBOX_VOICE) fills in when the call
+    # names neither voice= nor reference_clip=. An explicit reference_clip=
+    # must not trigger it: voice= and reference_clip= are mutually exclusive,
+    # and the caller who brought their own clip means it.
+    if not voice and not reference_clip and cfg.voice:
+        voice = cfg.voice
+
     clip = _resolve_clip(cfg.voices_dir, voice, reference_clip)
 
     if clip is None and not spec.stock_voice:

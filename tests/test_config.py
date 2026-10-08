@@ -15,6 +15,7 @@ class TestDefaults:
     def test_sensible_defaults(self):
         c = Config()
         assert c.model == "turbo"
+        assert c.voice == ""
         assert c.device == "auto"
         assert c.gpu_index is None
         assert c.vram_floor_mb == DEFAULT_VRAM_FLOOR_MB
@@ -147,6 +148,21 @@ class TestGpuIndex:
     def test_garbage_becomes_none(self, monkeypatch):
         monkeypatch.setenv("CHATTERBOX_GPU_INDEX", "first")
         assert Config().gpu_index is None
+
+
+class TestDefaultVoice:
+    def test_unset_is_empty(self):
+        assert Config().voice == ""
+
+    def test_set_is_kept(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_VOICE", "  Narrator  ")
+        # Voice names resolve case-insensitively, so only whitespace is
+        # trimmed, never lowercased (compare CHATTERBOX_MODEL).
+        assert Config().voice == "Narrator"
+
+    def test_blank_is_empty(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_VOICE", "   ")
+        assert Config().voice == ""
 
 
 class TestModelAndDevice:

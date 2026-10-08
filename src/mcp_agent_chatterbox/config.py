@@ -104,6 +104,14 @@ class Config:
         #: Default model key when a speak() call does not name one.
         self.model: str = os.getenv("CHATTERBOX_MODEL", "turbo").strip().lower()
 
+        #: Default reference clip (name in the voices dir) when a speak()
+        #: call names neither voice= nor reference_clip=. Empty means no
+        #: default: each model then uses its own voice, or reports
+        #: reference_clip_required if it has none. Resolved like any other
+        #: voice name, so a default that does not exist fails fast with
+        #: voice_not_found instead of silently rendering in another voice.
+        self.voice: str = os.getenv("CHATTERBOX_VOICE", "").strip()
+
         #: "auto" | "cpu" | "cuda" | "cuda:N". "auto" resolves at load time.
         self.device: str = os.getenv("CHATTERBOX_DEVICE", "auto").strip().lower()
 
@@ -148,6 +156,7 @@ class Config:
             f"logs_dir={self.logs_dir!r}, "
             f"hf_home={self.hf_home!r}, "
             f"model={self.model!r}, "
+            f"voice={self.voice!r}, "
             f"device={self.device!r}, "
             f"gpu_index={self.gpu_index!r}, "
             f"vram_floor_mb={self.vram_floor_mb!r}, "

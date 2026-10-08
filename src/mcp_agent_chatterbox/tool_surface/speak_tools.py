@@ -67,9 +67,10 @@ def register(server, ctx) -> None:
         and inline tags as turbo, lighter and quicker — pass it explicitly).
         VOICE: if the user has not named a voice, ask once which voice to
         use before the first spoken reply, then keep that voice for the
-        rest of the exchange — unless the user is waiting on the content,
-        in which case speak in the built-in voice and offer the voice
-        choice alongside the answer.
+        rest of the exchange — unless tts_status reports a configured
+        default_voice (use it silently, no question), or the user is
+        waiting on the content (speak in the built-in voice and offer the
+        voice choice alongside the answer).
 
         model:   "turbo" (default, 350M, English, no reference clip needed,
                  supports inline [laugh]/[chuckle] tags), "nano" (110M,

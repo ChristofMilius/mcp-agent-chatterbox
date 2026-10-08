@@ -23,17 +23,18 @@ from mcp_agent_chatterbox.registry import (
 
 def register(server, ctx) -> None:
     engine = ctx.engine
+    cfg = ctx.cfg
 
     @server.tool()
     def tts_status() -> str:
         """
         Report Chatterbox TTS readiness: installed packages, resolved device,
         per-GPU free/total VRAM, the resident model, the models available, the
-        languages the multilingual model speaks, and the paralinguistic tags
-        turbo understands. Loads no weights — safe as a preflight before a
-        speak call. On a machine where a large model already occupies a GPU,
-        check free_mb here first: a card with less than ~4096 MB free will
-        fail to load.
+        languages the multilingual model speaks, the configured default voice
+        (CHATTERBOX_VOICE), and the paralinguistic tags turbo understands.
+        Loads no weights — safe as a preflight before a speak call. On a
+        machine where a large model already occupies a GPU, check free_mb here
+        first: a card with less than ~4096 MB free will fail to load.
         """
         try:
             payload = {
@@ -41,6 +42,7 @@ def register(server, ctx) -> None:
                 "runtime": engine.status(),
                 "gpus": engine.gpu_report(),
                 "models": describe_models(),
+                "default_voice": cfg.voice or None,
                 "multilingual_languages": SUPPORTED_LANGUAGES,
                 "multilingual_t3_models": sorted(T3_MODELS),
                 "turbo_paralinguistic_tags": list(TURBO_TAGS),
