@@ -24,7 +24,7 @@ def _write_wav(path, seconds, rate=24000, channels=1):
 def voices(tmp_path):
     d = tmp_path / "voices"
     d.mkdir()
-    for name in ("seven.wav", "narrator.mp3", "Ann.WAV"):
+    for name in ("alpha.wav", "narrator.mp3", "Ann.WAV"):
         (d / name).write_bytes(b"RIFF" + b"\0" * 64)
     (d / "notes.txt").write_text("not a clip")
     (d / "subdir").mkdir()
@@ -34,7 +34,7 @@ def voices(tmp_path):
 class TestListVoices:
     def test_lists_only_audio(self, voices):
         names = {v["name"] for v in list_voices(voices)}
-        assert names == {"seven", "narrator", "Ann"}
+        assert names == {"alpha", "narrator", "Ann"}
 
     def test_excludes_non_audio(self, voices):
         assert "notes" not in {v["name"] for v in list_voices(voices)}
@@ -44,7 +44,7 @@ class TestListVoices:
         assert list_voices(tmp_path / "nope") == []
 
     def test_reports_size(self, voices):
-        entry = next(v for v in list_voices(voices) if v["name"] == "seven")
+        entry = next(v for v in list_voices(voices) if v["name"] == "alpha")
         assert entry["size_kb"] == pytest.approx(0.1, abs=0.01)
 
 
@@ -63,7 +63,7 @@ class TestClipMetadata:
     def test_unreadable_clip_degrades_to_nulls(self, voices):
         # The fixture writes RIFF + noise, not a real header. Listing must still
         # succeed -- a clip we cannot probe may still be usable.
-        entry = next(v for v in list_voices(voices) if v["name"] == "seven")
+        entry = next(v for v in list_voices(voices) if v["name"] == "alpha")
         assert entry["duration_s"] is None
         assert entry["sample_rate"] is None
         assert "quality_note" not in entry
@@ -81,7 +81,7 @@ class TestClipMetadata:
         # be warned about.
         d = tmp_path / "voices"
         d.mkdir()
-        _write_wav(d / "seven.wav", 40.1, rate=48000, channels=2)
+        _write_wav(d / "long.wav", 40.1, rate=48000, channels=2)
         assert "quality_note" not in list_voices(d)[0]
 
     def test_unknown_duration_is_never_flagged(self, tmp_path):
@@ -93,14 +93,14 @@ class TestClipMetadata:
 
 class TestResolveVoice:
     def test_exact_match(self, voices):
-        assert resolve_voice(voices, "seven").name == "seven.wav"
+        assert resolve_voice(voices, "alpha").name == "alpha.wav"
 
     def test_case_insensitive(self, voices):
-        assert resolve_voice(voices, "SEVEN").name == "seven.wav"
+        assert resolve_voice(voices, "ALPHA").name == "alpha.wav"
         assert resolve_voice(voices, "ann").name == "Ann.WAV"
 
     def test_extension_accepted(self, voices):
-        assert resolve_voice(voices, "seven.wav").name == "seven.wav"
+        assert resolve_voice(voices, "alpha.wav").name == "alpha.wav"
 
     def test_unique_prefix(self, voices):
         assert resolve_voice(voices, "narr").name == "narrator.mp3"
@@ -128,7 +128,7 @@ class TestResolveVoice:
         with pytest.raises(ToolFault) as exc:
             resolve_voice(voices, "nobody")
         assert exc.value.reason == "voice_not_found"
-        assert "seven" in exc.value.message
+        assert "alpha" in exc.value.message
 
     def test_empty_name(self, voices):
         with pytest.raises(ToolFault) as exc:
@@ -137,7 +137,7 @@ class TestResolveVoice:
 
     def test_missing_dir_suggests_turbo(self, tmp_path):
         with pytest.raises(ToolFault) as exc:
-            resolve_voice(tmp_path / "nope", "seven")
+            resolve_voice(tmp_path / "nope", "alpha")
         assert exc.value.reason == "voices_dir_missing"
         assert "turbo" in exc.value.message
 

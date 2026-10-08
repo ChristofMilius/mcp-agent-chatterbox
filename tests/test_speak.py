@@ -24,11 +24,16 @@ def _no_sound(silent_playback):
 
 
 @pytest.fixture
-def seven(cfg):
-    """Put one reference clip in the voices dir and return its name."""
+def narrator(cfg):
+    """Put one synthetic reference clip in the voices dir and return its name.
+
+    Generic fixture name on purpose -- tests never reference a real local
+    voice, and multilingual/original (which have no built-in voice) need a
+    clip to exist at all.
+    """
     cfg.voices_dir.mkdir(parents=True, exist_ok=True)
-    (cfg.voices_dir / "seven.wav").write_bytes(b"RIFF" + b"\0" * 32)
-    return "seven"
+    (cfg.voices_dir / "narrator.wav").write_bytes(b"RIFF" + b"\0" * 32)
+    return "narrator"
 
 
 def run(cfg, engine, text="Build finished.", **kwargs):
@@ -63,10 +68,12 @@ class TestModelValidation:
         assert exc.value.reason == "unknown_model"
         assert "turbo" in exc.value.message
 
-    def test_defaults_to_configured_model(self, cfg, fake_engine, seven):
-        cfg.model = "original"
-        run(cfg, fake_engine, voice=seven)
-        assert fake_engine.calls[0]["model"] == "original"
+    def test_defaults_to_configured_model(self, cfg, fake_engine):
+        # nano is a stock-voice model, so the configured default is exercised
+        # on the built-in voice -- no reference clip involved.
+        cfg.model = "nano"
+        run(cfg, fake_engine)
+        assert fake_engine.calls[0]["model"] == "nano"
 
     def test_full_hf_repo_id_is_rejected_clearly(self, cfg, fake_engine):
         # Models are addressed by short key. A repo id must be refused by name,
@@ -76,23 +83,24 @@ class TestModelValidation:
         assert exc.value.reason == "unknown_model"
         assert fake_engine.calls == []
 
-    def test_alias_is_accepted(self, cfg, fake_engine, seven):
-        run(cfg, fake_engine, model="multi", voice=seven)
+    def test_alias_is_accepted(self, cfg, fake_engine, narrator):
+        run(cfg, fake_engine, model="multi", voice=narrator)
         assert fake_engine.calls[0]["model"] == "multilingual"
 
 
 class TestLanguageValidation:
     def test_rejects_unsupported(self, cfg, fake_engine):
+        # Language validation runs before the clip check, so no voice is needed.
         with pytest.raises(ToolFault) as exc:
-            run(cfg, fake_engine, model="multilingual", language="xx", voice="seven")
+            run(cfg, fake_engine, model="multilingual", language="xx")
         assert exc.value.reason == "unsupported_language"
         supported = cast("list[str]", exc.value.extra["supported"])
         assert "de" in supported
 
     def test_normalizes_case_and_whitespace(self, cfg, fake_engine, tmp_path):
         (cfg.voices_dir).mkdir(parents=True, exist_ok=True)
-        (cfg.voices_dir / "seven.wav").write_bytes(b"RIFF")
-        run(cfg, fake_engine, model="multilingual", language="  DE  ", voice="seven")
+        (cfg.voices_dir / "narrator.wav").write_bytes(b"RIFF")
+        run(cfg, fake_engine, model="multilingual", language="  DE  ", voice="narrator")
         assert fake_engine.calls[0]["language"] == "de"
 
     def test_ignored_for_non_multilingual(self, cfg, fake_engine):
@@ -106,25 +114,24 @@ class TestLanguageValidation:
 
     def test_every_advertised_language_passes(self, cfg, fake_engine, tmp_path):
         (cfg.voices_dir).mkdir(parents=True, exist_ok=True)
-        (cfg.voices_dir / "seven.wav").write_bytes(b"RIFF")
+        (cfg.voices_dir / "narrator.wav").write_bytes(b"RIFF")
         for code in SUPPORTED_LANGUAGES:
-            run(cfg, fake_engine, model="multilingual", language=code, voice="seven")
+            run(cfg, fake_engine, model="multilingual", language=code, voice="narrator")
         assert len(fake_engine.calls) == len(SUPPORTED_LANGUAGES)
 
 
 class TestT3ModelValidation:
-    def test_rejects_unknown(self, cfg, fake_engine, tmp_path):
-        (cfg.voices_dir).mkdir(parents=True, exist_ok=True)
-        (cfg.voices_dir / "seven.wav").write_bytes(b"RIFF")
+    def test_rejects_unknown(self, cfg, fake_engine):
+        # t3 validation runs before the clip check, so no voice is needed.
         with pytest.raises(ToolFault) as exc:
-            run(cfg, fake_engine, model="multilingual", voice="seven", t3_model="v9")
+            run(cfg, fake_engine, model="multilingual", t3_model="v9")
         assert exc.value.reason == "unsupported_t3_model"
 
     def test_accepts_each_advertised(self, cfg, fake_engine, tmp_path):
         (cfg.voices_dir).mkdir(parents=True, exist_ok=True)
-        (cfg.voices_dir / "seven.wav").write_bytes(b"RIFF")
+        (cfg.voices_dir / "narrator.wav").write_bytes(b"RIFF")
         for choice in T3_MODELS:
-            run(cfg, fake_engine, model="multilingual", voice="seven", t3_model=choice)
+            run(cfg, fake_engine, model="multilingual", voice="narrator", t3_model=choice)
         assert {c["t3_model"] for c in fake_engine.calls} == set(T3_MODELS)
 
     def test_ignored_for_turbo(self, cfg, fake_engine):
@@ -153,9 +160,9 @@ class TestReferenceClipRequirement:
         clip = tmp_path / "clip.wav"
         clip.write_bytes(b"RIFF")
         (cfg.voices_dir).mkdir(parents=True, exist_ok=True)
-        (cfg.voices_dir / "seven.wav").write_bytes(b"RIFF")
+        (cfg.voices_dir / "narrator.wav").write_bytes(b"RIFF")
         with pytest.raises(ToolFault) as exc:
-            run(cfg, fake_engine, model="turbo", voice="seven", reference_clip=str(clip))
+            run(cfg, fake_engine, model="turbo", voice="narrator", reference_clip=str(clip))
         assert exc.value.reason == "ambiguous_voice"
 
 
@@ -163,12 +170,12 @@ class TestReferenceClipResolution:
     @pytest.fixture
     def voices_dir(self, cfg):
         cfg.voices_dir.mkdir(parents=True, exist_ok=True)
-        (cfg.voices_dir / "seven.wav").write_bytes(b"RIFF" + b"\0" * 32)
+        (cfg.voices_dir / "narrator.wav").write_bytes(b"RIFF" + b"\0" * 32)
         return cfg.voices_dir
 
     def test_voice_name_resolves_to_path(self, cfg, fake_engine, voices_dir):
-        run(cfg, fake_engine, model="multilingual", voice="seven", language="en")
-        assert fake_engine.calls[0]["reference_clip"].endswith("seven.wav")
+        run(cfg, fake_engine, model="multilingual", voice="narrator", language="en")
+        assert fake_engine.calls[0]["reference_clip"].endswith("narrator.wav")
 
     def test_explicit_path_accepted(self, cfg, fake_engine, voices_dir, tmp_path):
         clip = tmp_path / "elsewhere.wav"
@@ -254,7 +261,7 @@ class TestPlayback:
 
 
 class TestProgressive:
-    LONG = "Alpha one two three four five six. Beta seven eight nine ten eleven. Gamma twelve thirteen."
+    LONG = "Alpha red green blue. Beta yellow orange purple. Gamma pink black white."
 
     def _record_play(self, monkeypatch):
         calls = []
