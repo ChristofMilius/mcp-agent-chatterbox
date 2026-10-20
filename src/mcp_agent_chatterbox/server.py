@@ -28,17 +28,22 @@ Local text-to-speech with Chatterbox (Resemble AI), running on this machine's
 GPU. Text in, spoken audio out.
 
 Picking a model:
-  * turbo        350M, English. Fastest and lightest. Has a built-in voice, so
-                 it works with no reference clip. Understands paralinguistic
-                 tags written inline in the text: [laugh], [chuckle], [sigh],
-                 [cough], [whisper]. Best default.
-  * nano         110M, English, turbo's smaller sibling: same architecture,
-                 tags and built-in voice, tightest latency/memory budget (also
-                 runs on CPU).
+  * nano         110M, English. PREFERRED default: same architecture, tags and
+                 built-in voice as turbo with competitive quality, at a third
+                 of the size — tightest latency/memory budget (also runs on
+                 CPU). Understands paralinguistic tags written inline in the
+                 text: [laugh], [chuckle], [sigh], [cough], [whisper].
+  * turbo        350M, English. nano's bigger sibling: same features, more
+                 VRAM headroom. Has a built-in voice, so it works with no
+                 reference clip.
   * multilingual 500M, 23 languages including German. REQUIRES a reference
                  clip (voice= or reference_clip=). Pass language="de" etc.
   * original     500M, English, the CFG/exaggeration tuning model. REQUIRES a
                  reference clip.
+
+Reference clips: voice= / reference_clip= clone a voice on ANY model — the
+stock voice of turbo/nano is only the fallback when no clip is given. The two
+500M models require a clip because they ship no built-in voice.
 
 Workflow:
   1. tts_status() -> confirm the device, see free VRAM per GPU (a card with

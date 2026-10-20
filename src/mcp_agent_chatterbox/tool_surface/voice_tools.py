@@ -47,10 +47,12 @@ def register(server, ctx) -> None:
                     "count": len(voices),
                     "voices": voices,
                     "accepted_formats": list(VOICE_SUFFIXES),
-                    "usable_with": [m["key"] for m in describe_models() if not m["stock_voice"]],
+                    "requires_reference_clip": [
+                        m["key"] for m in describe_models() if not m["stock_voice"]
+                    ],
                     "note": (
                         "No reference clips yet — add a wav/mp3 to the voices "
-                        "directory, or speak with model='turbo' which ships a "
+                        "directory, or speak with model='nano' which ships a "
                         "built-in voice."
                         if not voices
                         else "Pass the name as voice= to speak()."

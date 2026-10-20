@@ -76,14 +76,17 @@ def register(server, ctx) -> None:
         waiting on the content (speak in the built-in voice and offer the
         voice choice alongside the answer).
 
-        model:   "turbo" (default, 350M, English, no reference clip needed,
-                 supports inline [laugh]/[chuckle] tags), "nano" (110M,
-                 turbo's smaller sibling, built-in voice, tightest budget —
-                 PREFERRED for English replies),
+        model:   "nano" (PREFERRED for English replies: 110M, turbo's smaller
+                 sibling with competitive quality, built-in voice, tightest
+                 budget), "turbo" (350M, English, no reference clip needed,
+                 supports inline [laugh]/[chuckle] tags),
                  "multilingual" (500M, 23 languages, requires a reference clip)
                  or "original" (500M, English, requires a reference clip).
         voice:   name of a reference clip in the voices directory (its filename
-                 without extension). Required for multilingual/original.
+                 without extension). Cloning works on every model — turbo/nano
+                 fall back to their built-in voice only when no clip is given.
+                 Required for multilingual/original, which ship no built-in
+                 voice.
         reference_clip: path to a wav/mp3/flac clip, as an alternative to voice=.
                  Supply as much clean continuous speech as you have. Short
                  references measurably increase fine clicks and crackle: a 40 s
