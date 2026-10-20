@@ -167,10 +167,73 @@ Weights are **not** bundled. They download from Hugging Face on the first
 Subsequent calls reuse the cache.
 
 - `turbo` → `ResembleAI/chatterbox-turbo`
+- `nano` → `ResembleAI/chatterbox-nano` (a separate repo, not a subset of turbo)
 - `multilingual` / `original` → `ResembleAI/chatterbox`
 
 Nothing is downloaded by `doctor` or `tts_status`, so those stay fast and work
 offline.
+
+### Putting the cache where you want it
+
+`HF_HOME` is the official Hugging Face switch: every HF tool (`huggingface-cli`,
+`transformers`, `huggingface_hub`, `datasets`) resolves its cache root from it.
+Setting it system-wide is the right thing to do, and it is what you want. This
+server adds one variable of its own, `CHATTERBOX_HF_HOME`, and the two are not
+alternatives to each other — **`CHATTERBOX_HF_HOME` simply sets `HF_HOME`**
+(see `engine.py:_apply_hf_home`). If the two are set to the same path, nothing
+is in conflict and nothing is duplicated in effect.
+
+So why is a second spelling needed at all? Because a system-wide `HF_HOME` can
+fail to reach the server, and that failure is silent. Two things are involved.
+
+**1. Not every harness forwards your environment to MCP subprocesses.** This is
+the mechanism worth being precise about, because it is easy to misdiagnose.
+Environment variables are not global to the machine at runtime — each process
+receives an environment block from its parent, and a parent may spawn a child
+with a **subset** of its own. When a harness builds the child environment from
+only the `env:` block in its own config, your user-level `HF_HOME` is simply
+absent from that child. The server then has no `HF_HOME`, and `huggingface_hub`
+falls back to the default under `C:\` — no error, just a download to the wrong
+drive.
+
+This is **not** about `PATH`. `PATH` is the list of directories searched for
+executables and has nothing to do with where a cache is written. The variable
+that matters is `HF_HOME`, and the thing that failed was process environment
+inheritance, not a path lookup.
+
+**2. `HF_HOME` must be set before `huggingface_hub` is imported.**
+`huggingface_hub` reads and *seals* `HF_HOME` into its constants module on first
+import, which happens the moment a Chatterbox model class is imported. Setting
+the variable later in the process has no effect at all. This server therefore
+applies `CHATTERBOX_HF_HOME` to `HF_HOME` inside `engine.load()` — immediately
+before `load_model_class()`, and before anything has touched
+`huggingface_hub` — so the cache root is fixed at the only moment that matters.
+
+Together these are why setting the cache path **in the server's own
+registration** is the robust move:
+
+```yaml
+env:
+  CHATTERBOX_HF_HOME: /path/to/hf-cache   # sets HF_HOME before the model import
+```
+
+Setting it here and in your system environment to the same path is fine — the
+server detects the match and does nothing. Forward slashes work on Windows; left
+unset, the variable leaves HF's own default untouched rather than pointing it
+somewhere arbitrary.
+
+**The symptom, if you get it wrong:** the first `speak()` after a config change
+takes minutes again, and a second copy of the model appears under
+`C:\Users\<you>\.cache\huggingface\hub\models--ResembleAI--chatterbox-<model>`.
+`HF_HOME` is sealed per *process*, so a harness restart re-reads config while a
+long-running server does not — check the server's registration, and the
+registration's `env:` block, when hunting this.
+
+**Corollary for `nano`.** Because `nano` is a separate HF repo, switching
+`CHATTERBOX_MODEL` from `turbo` to `nano` (or back) is a **fresh download**, not
+a reuse of an already-cached sibling. A machine with turbo cached still pays a
+full nano fetch the first time — into whichever cache root is actually in
+effect, so get the cache path right *before* that first nano call.
 
 ## Registering the MCP server
 
@@ -186,31 +249,67 @@ Add to `~/.config/opencode/opencode.jsonc`:
         "mcp-agent-chatterbox", "serve"
       ],
       "environment": {
-        // Which model speak() uses when a call names none.
-        // No reference clip is needed for turbo/nano, which both have a
-        // built-in voice and are faster to load than the 500M models.
+        // ----- which model and voice -----
+        // Model speak() uses when a call names none. turbo and nano both
+        // have a built-in voice and are faster to load than the 500M
+        // models; nano is a separate HF repo, so switching to it is a
+        // fresh download (see "Model weights").
         "CHATTERBOX_MODEL": "turbo",
 
         // Default reference clip when a call names neither voice= nor
         // reference_clip= (optional). Resolved like any other voice name;
         // a typo fails fast with voice_not_found, it never silently
-        // renders in another voice.
+        // renders in another voice. Required for multilingual/original.
         "CHATTERBOX_VOICE": "<a name from list_voices>",
 
-        // The multi-GPU box: pin which card TTS uses. Doctor shows which
-        // one LM Studio is not sitting on.
+        // Where reference clips live. Relative paths resolve against the
+        // project root, never the process CWD.
+        "CHATTERBOX_VOICES_DIR": "voices",
+
+        // ----- where the model weights are cached -----
+        // Strongly recommended. Sets HF_HOME before huggingface_hub is
+        // imported, so the multi-GB download lands here instead of
+        // C:\Users\<you>\.cache\huggingface. This is the setting that
+        // survives a harness which does NOT forward the user environment
+        // to MCP subprocesses — set it here, not in your shell. Forward
+        // slashes are fine on Windows.
+        "CHATTERBOX_HF_HOME": "/path/to/hf-cache",
+
+        // ----- which GPU -----
+        // "auto" (default) picks the CUDA device with the most free
+        // memory. doctor shows which card LM Studio is not sitting on.
+        "CHATTERBOX_DEVICE": "auto",
+
+        // Pin a specific card instead of trusting the auto heuristic.
         "CHATTERBOX_GPU_INDEX": "0",
 
+        // Free-VRAM floor (MiB) for a load attempt, and whether falling
+        // below it warns (0, default) or refuses (1).
+        "CHATTERBOX_VRAM_MB": "4096",
+        "CHATTERBOX_STRICT_VRAM": "0",
+
+        // ----- playback and output -----
         // Play the audio after writing it (1/0/true/false; default on).
         "CHATTERBOX_AUTOPLAY": "1",
 
-        // Free-VRAM floor (MiB) for a model-load attempt.
-        "CHATTERBOX_VRAM_MB": "4096",
+        // With playback on, play each long-text chunk the moment it
+        // renders instead of waiting for the whole utterance.
+        "CHATTERBOX_PROGRESSIVE": "0",
 
-        // WAVs and logs; relative paths resolve against the project root,
+        // WAVs and logs. Relative paths resolve against the project root,
         // never the process CWD.
         "CHATTERBOX_OUTPUT_DIR": "tts_output",
-        "CHATTERBOX_LOGS_DIR": "logs"
+        "CHATTERBOX_LOGS_DIR": "logs",
+
+        // ----- long text -----
+        // Reject single requests longer than this (chars)...
+        "CHATTERBOX_MAX_CHARS": "4000",
+
+        // ...and split anything over this (chars) into sentence-aligned
+        // chunks, stitched into one file with this much silence between
+        // them.
+        "CHATTERBOX_MAX_CHUNK_CHARS": "500",
+        "CHATTERBOX_CHUNK_PAUSE_MS": "250"
       },
       "enabled": true
     }
@@ -221,6 +320,32 @@ Add to `~/.config/opencode/opencode.jsonc`:
 Every setting from the [Configuration](#configuration) table can go in that
 `environment` block. Nothing is loaded at startup, so an `enabled: true`
 server stays idle until a tool call arrives.
+
+**YAML-based harnesses** (clients that configure MCP servers in a `.yaml` file
+rather than JSON) take the same command, with `command`/`args` split and the
+environment named `env`:
+
+```yaml
+  chatterbox:
+    command: uv
+    args:
+      - run
+      - --directory
+      - <absolute path to this repo>
+      - mcp-agent-chatterbox
+      - serve
+    env:
+      CHATTERBOX_HF_HOME: /path/to/hf-cache   # set it here - not every harness forwards your shell env
+      CHATTERBOX_MODEL: turbo
+      CHATTERBOX_VOICE: <a name from list_voices>
+      CHATTERBOX_GPU_INDEX: '1'
+      CHATTERBOX_AUTOPLAY: '1'
+      CHATTERBOX_OUTPUT_DIR: tts_output
+      CHATTERBOX_LOGS_DIR: logs
+```
+
+Quote the numeric-looking values (`'1'`) — YAML would otherwise read them as
+integers, and a non-string env value is a harness-specific coin flip.
 
 **LM Studio Bionic / Claude Desktop / other clients:** the same command and
 environment work in their own config format — strict JSON (no comments),
@@ -236,9 +361,21 @@ environment work in their own config format — strict JSON (no comments),
         "mcp-agent-chatterbox", "serve"
       ],
       "env": {
+        "CHATTERBOX_HF_HOME": "/path/to/hf-cache",
         "CHATTERBOX_MODEL": "turbo",
         "CHATTERBOX_VOICE": "<a name from list_voices>",
-        "CHATTERBOX_GPU_INDEX": "1"
+        "CHATTERBOX_VOICES_DIR": "voices",
+        "CHATTERBOX_DEVICE": "auto",
+        "CHATTERBOX_GPU_INDEX": "1",
+        "CHATTERBOX_VRAM_MB": "4096",
+        "CHATTERBOX_STRICT_VRAM": "0",
+        "CHATTERBOX_AUTOPLAY": "1",
+        "CHATTERBOX_PROGRESSIVE": "0",
+        "CHATTERBOX_OUTPUT_DIR": "tts_output",
+        "CHATTERBOX_LOGS_DIR": "logs",
+        "CHATTERBOX_MAX_CHARS": "4000",
+        "CHATTERBOX_MAX_CHUNK_CHARS": "500",
+        "CHATTERBOX_CHUNK_PAUSE_MS": "250"
       }
     }
   }
@@ -526,7 +663,7 @@ All settings are environment variables, read at startup. No secrets.
 | `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence inserted between concatenated chunks |
 | `CHATTERBOX_VRAM_MB` | `4096` | Free-VRAM floor for a load attempt |
 | `CHATTERBOX_STRICT_VRAM` | `0` | `1` refuses a load below the floor instead of warning |
-| `CHATTERBOX_HF_HOME` | unset | Home for the Hugging Face cache (sets `HF_HOME` before the model loads). Handy when the weights live on a big drive or a path the default `~/.cache/huggingface` cannot cover |
+| `CHATTERBOX_HF_HOME` | unset | Where the Hugging Face cache lives. Does not compete with `HF_HOME` — it **sets** it, at load time, before `huggingface_hub` seals the value on import. Use it in the MCP server's registration so the cache root cannot be lost to a harness that does not forward your environment. See [Model weights](#model-weights) |
 
 Relative paths resolve against the project root, never the process CWD, since
 MCP harnesses spawn servers with an unpredictable working directory.
@@ -596,7 +733,13 @@ voice. Add a clip to `voices/` and pass `voice=`, or use `model="turbo"`.
 applies to `multilingual`. `tts_status` lists all 23.
 
 **First call is very slow.** That is the Hugging Face download. Later calls
-reuse the cache.
+reuse the cache — **unless the cache root moved.** If the first call is slow
+*again* after you changed a config or restarted a harness, the server is
+probably re-downloading to a different location: check the model's
+registration for `CHATTERBOX_HF_HOME` and look for a second copy under
+`C:\Users\<you>\.cache\huggingface\hub`. See
+[Model weights](#model-weights) for why `HF_HOME` in your shell is not always
+enough.
 
 **Audio does not come out.** Check `played` and `playback_note` in the
 response. Playback needs Windows; on other platforms the WAV is still written.
