@@ -502,6 +502,32 @@ one evicts the previous automatically — but this frees it entirely.
 
 The reference clips available for cloning, with names to pass as `voice=`.
 
+```
+{
+  "status": "ok",
+  "voices_dir": "<absolute path to the voices directory>",
+  "count": 3,
+  "voices": ["<clip name>", "<clip name>", "<clip name>"],
+  "accepted_formats": [".wav", ".mp3", ".flac", ".ogg", ".m4a"],
+  "requires_reference_clip": ["multilingual", "original"],
+  "note": "Pass the name as voice= to speak()."
+}
+```
+
+`requires_reference_clip` lists the models that **cannot speak without** a clip
+(`multilingual`, `original` — the two 500M models, which ship no built-in
+voice). `turbo` and `nano` are absent because they have a stock voice and
+accept an optional clip on top of it.
+
+**Renamed from `usable_with`.** The old field name read as "the models that
+accept a clip", which is every model — cloning works on turbo and nano too, they
+just fall back to the built-in voice when none is given. So the name described
+the opposite of what the list contained, and only happened to look correct
+because the models that *require* a clip are a subset of those that *accept*
+one. Any client keying off `usable_with` now reads `null` and silently gets an
+empty list — if you have a saved prompt, script or test matching that key, update
+it to `requires_reference_clip`.
+
 ### `stop_speech`
 
 Cuts off playback started with `wait=false`.
