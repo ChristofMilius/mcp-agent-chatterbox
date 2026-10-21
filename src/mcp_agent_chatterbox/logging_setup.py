@@ -6,6 +6,11 @@ Configures two handlers:
   2. RotatingFileHandler      — DEBUG level, written to logs/mcp_agent_chatterbox.log.
                                   Rotates at 5 MB, keeps 5 backups.
 
+Third-party chatter is pinned to WARNING (see _NOISY_LOGGERS): leftover DEBUG
+output from numba's JIT compiler alone was rotating the 5 MB file every couple
+of minutes and crowding out this package's own records. Warnings and errors
+from those libraries still land in the file.
+
 stderr matters: an MCP server on stdio owns stdout for the protocol, so any
 library that prints to stdout (Chatterbox's from_local() does) would corrupt
 the JSON-RPC framing. The console handler is on stderr for that reason.
@@ -30,6 +35,25 @@ _CONSOLE_FORMAT = "%(asctime)s  %(levelname)-8s  %(name)s  %(message)s"
 _LOG_FILENAME = "mcp_agent_chatterbox.log"
 _MAX_BYTES = 5 * 1024 * 1024  # 5 MB per file
 _BACKUP_COUNT = 5  # keep mcp_agent_chatterbox.log through .log.5
+
+#: Third-party loggers that emit tens of thousands of DEBUG lines per model
+#: load. numba dumps every bytecode dispatch of Chatterbox's JIT compiler:
+#: a single load measured ~460,000 DEBUG lines against ~5,300 from this
+#: package — the 5 MB log rotated every couple of minutes, so the records
+#: worth keeping were already gone by the time anything was diagnosed.
+#: Their WARNING and above still reaches the file; only the chatter is
+#: suppressed, and each logger's own children (numba.core.*) inherit it.
+_NOISY_LOGGERS = (
+    "numba",
+    "httpcore",
+    "httpx",
+    "huggingface_hub",
+    "urllib3",
+    "filelock",
+    "asyncio",
+    "matplotlib",
+    "PIL",
+)
 
 
 def _make_console_encoding_safe() -> None:
@@ -96,6 +120,9 @@ def setup_logging(logs_dir: str) -> Path:
 
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
+
+    for name in _NOISY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     logging.getLogger(__name__).info(
         "[logging] Log file: %s (rotating, max %d MB x %d backups)",
