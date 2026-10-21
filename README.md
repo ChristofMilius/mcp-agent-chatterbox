@@ -707,28 +707,30 @@ one permanently (then open a new terminal):
 
 ```bat
 @echo off
-REM cbc — run mcp-agent-chatterbox from any directory.
+REM cbc - run mcp-agent-chatterbox from any directory.
 setlocal
 set "REPO=<absolute path to this repo>"
 
 REM Preferred: uv resolves the project environment itself.
 where uv >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    uv run --directory "%REPO%" mcp-agent-chatterbox %*
-    exit /b %ERRORLEVEL%
-)
+if %ERRORLEVEL% equ 0 goto :use_uv
 
 REM Fallback: the project venv, for machines without uv.
-if exist "%REPO%\.venv\Scripts\python.exe" (
-    "%REPO%\.venv\Scripts\python.exe" -m mcp_agent_chatterbox %*
-    exit /b %ERRORLEVEL%
-)
+if exist "%REPO%\.venv\Scripts\python.exe" goto :use_venv
 
 echo cbc: mcp-agent-chatterbox not found.
 echo   tried: uv run --directory "%REPO%" mcp-agent-chatterbox
 echo   tried: "%REPO%\.venv\Scripts\python.exe" -m mcp_agent_chatterbox
 echo Is the repo path right, and has the environment been synced?
 exit /b 1
+
+:use_uv
+uv run --directory "%REPO%" mcp-agent-chatterbox %*
+exit /b %ERRORLEVEL%
+
+:use_venv
+"%REPO%\.venv\Scripts\python.exe" -m mcp_agent_chatterbox %*
+exit /b %ERRORLEVEL%
 ```
 
 **3. Verify** from a directory that is *not* the repo — this is the whole point:
@@ -746,6 +748,13 @@ but it is useless on a machine without `uv`. The venv fallback needs no tooling
 beyond the synced environment. `%*` forwards every argument and `exit /b
 %ERRORLEVEL%` keeps the exit code, so `cbc worker-status` still exits non-zero
 when no worker is up — which is what makes it usable in a script.
+
+**Do not wrap the two commands in `if (...)` blocks.** In batch, `%ERRORLEVEL%`
+inside a parenthesised block is substituted when the block is *parsed*, not when
+each line runs, so `exit /b %ERRORLEVEL%` would return the status from before
+the command — 0 every time. That silently turns a failing `cbc speak` into a
+successful one. Labelled `goto` branches keep each `%ERRORLEVEL%` on a line of
+its own, read after the command it belongs to.
 
 Then from anywhere: `cbc worker`, `cbc worker-status`, `cbc worker-stop`,
 `cbc doctor`, `cbc speak "..."`.
@@ -931,6 +940,46 @@ The engine queries free VRAM first, warns (or refuses under
 a status or voice-listing call must not pay the multi-second torch import plus a
 multi-gigabyte fetch. The worker, which is started deliberately and lives for
 hours, loads the model on its first utterance and keeps it resident.
+
+## Dependency advisories
+
+Two of the dependencies GitHub flags here cannot both be fixed, and the reason is
+worth writing down so nobody "fixes" it the wrong way.
+
+**`certifi` — fixed.** The lock held `2026.7.22`, whose bundle included emSign
+root CAs with compromised intermediate keys; it is now `2026.10.19`. This one
+mattered because it is the CA bundle used for HTTPS when downloading model
+weights from Hugging Face.
+
+**`Pillow` — cannot be fixed while `gradio` is present.** Pillow 12.3.0 carries
+nine advisories (2 critical, 6 high, 2 moderate), all fixed in 13.0.0. But
+`gradio` requires `pillow<13.0,>=8.0` — including the latest release (6.30.0) —
+and `chatterbox-tts` requires `gradio`. So `pillow 13.0.0` is unresolvable, and
+`uv lock --upgrade-package pillow==13.0.0` fails with a genuine conflict, not a
+stale lock. Verified against PyPI metadata rather than the resolver message
+alone:
+
+```
+gradio 6.30.0     -> pillow<13.0,>=8.0
+diffusers 0.38.0  -> Pillow            (unconstrained)
+pillow (PyPI)     -> 13.0.0
+```
+
+**Why the exposure is close to zero.** This server takes text and returns WAV. It
+has no image input path at all, and every one of those advisories lives in an
+image decoder — JPEG, TIFF, PDF, EPS, GIF, `_imagingmorph`. Pillow is in the tree
+only because `chatterbox-tts` ships a Gradio demo that this project never runs.
+Nothing here hands Pillow a file.
+
+**What not to do.** Do not add `[tool.uv] override-dependencies = ["pillow>=13.0.0"]`.
+It silences the alerts by overriding a constraint `gradio` declares outright, so
+Gradio's image code would run against a Pillow release it was never tested with —
+trading a warning about code you never execute for an untested runtime you cannot
+see. The correct fix arrives when Gradio raises its cap; re-check with:
+
+```bash
+uv lock --upgrade-package pillow --dry-run
+```
 
 ## Troubleshooting
 
