@@ -14,10 +14,11 @@ process-local FIFO. It returns as soon as the text is accepted — the caller ge
 the message id and the chunk filenames, not rendered audio.
 
 A worker thread then, for each chunk in order: renders it with the same voice
-and knobs, writes it as ``<message_id>_<n>.wav`` and plays it the moment it is
-written, sleeping ``CHATTERBOX_CHUNK_PAUSE_MS`` between chunks. The result is
-speech that starts within one sentence and continues without gaps while the
-rest of the reply is still being generated.
+and knobs, writes it as ``<message_id>_<n>.wav`` and plays it in order. A second
+thread keeps a small render-ahead buffer filled, so the next chunk is already
+on disk when the current one ends; ``CHATTERBOX_CHUNK_PAUSE_MS`` is the pause
+between chunks. The result is speech that starts within one sentence and
+continues without gaps while the rest of the reply is still being generated.
 
 Who waits, and who does not
 ---------------------------
@@ -55,7 +56,7 @@ import time
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import NamedTuple, Protocol
 
 from mcp_agent_chatterbox.audio import duration_s, write_wav
 from mcp_agent_chatterbox.config import Config
@@ -67,6 +68,36 @@ from mcp_agent_chatterbox.registry import SUPPORTED_LANGUAGES, T3_MODELS, get_sp
 from mcp_agent_chatterbox.voices import resolve_voice
 
 logger = logging.getLogger(__name__)
+
+#: Speech rate used to estimate how long a chunk will take to SPEAK, measured on
+#: this stack (nano/turbo, English, default voice): 1503 chars produced 85.8s of
+#: audio, i.e. ~17.5 characters per second. Only ever used to compare one chunk
+#: against another, so a rate that is off by 20% changes chunk sizes, not
+#: correctness.
+CHARS_PER_SECOND = 17.5
+
+#: Rendering runs at ~0.42x realtime, i.e. a chunk renders in about 40% of the
+#: time it takes to play. A chunk may therefore grow to roughly 2.4x its
+#: predecessor (0.42 * 2.4 = 1.0) and still be ready before that predecessor's
+#: playback ends. 2.2 keeps a little of that margin: the next render finishes at
+#: ~0.92 of the previous playback, so the buffer creeps ahead instead of racing
+#: the player. Going lower would break batching for evenly sized sentences, where
+#: two sentences are exactly 2x one and would just miss the limit.
+MAX_CHUNK_GROWTH = 2.2
+
+#: Floor for that growth rule. Without it, an opening sentence like "Okay."
+#: (0.2s) would cap the next chunk at 0.4s and force one chunk per sentence for
+#: the rest of the reply.
+MIN_CHUNK_SECONDS = 4.0
+
+#: Audio that must be banked before playback starts. Covers an opening sentence
+#: so short that the second chunk cannot finish rendering while it plays.
+PREROLL_SECONDS = 2.0
+
+#: Rendered chunks held ready ahead of the player. Only needs to absorb jitter;
+#: the sizing rule above is what guarantees the player stays fed.
+BUFFER_CHUNKS = 3
+
 
 #: Every Speaker that has been constructed and not yet collected. The worker
 #: thread is non-daemon (so real speech survives a per-turn harness), which
@@ -153,6 +184,11 @@ def _hard_split(sentence: str, max_chunk: int) -> list[str]:
     return [p for p in parts if p]
 
 
+def _speech_seconds(text: str) -> float:
+    """Estimated spoken length of `text`, from the measured speech rate."""
+    return len(text) / CHARS_PER_SECOND
+
+
 def split_sentences(text: str, max_chunk: int, sentences_per_chunk: int = 1) -> list[str]:
     """
     Split `text` into chunks of whole sentences.
@@ -164,6 +200,12 @@ def split_sentences(text: str, max_chunk: int, sentences_per_chunk: int = 1) -> 
     batching keeps short sentences from sounding staccato. The batch is capped by
     `max_chunk` characters as well as by the sentence count, since a single
     generate() call truncates past roughly that size.
+
+    It is also capped by *estimated speaking time* against the chunk before it
+    (see `_group_sentences`): the worker renders chunk N+1 while chunk N is
+    playing, so a chunk that needs longer to render than its predecessor takes
+    to play leaves the player silent. Sizing by duration instead of sentence
+    count is what keeps the ring buffer fed.
 
     The FIRST sentence always goes out alone, so audio starts as soon as one
     sentence is rendered rather than after a whole batch. Only a chunk that is
@@ -182,30 +224,67 @@ def split_sentences(text: str, max_chunk: int, sentences_per_chunk: int = 1) -> 
             units.append(unit)
     if not units:
         return []
-    groups = [[units[0]], *_group_sentences(units[1:], max_chunk, sentences_per_chunk)]
+    groups = [
+        [units[0]],
+        *_group_sentences(
+            units[1:],
+            max_chunk,
+            sentences_per_chunk,
+            previous_seconds=_speech_seconds(units[0]),
+        ),
+    ]
     chunks: list[str] = []
     for group in groups:
         chunks.extend(_hard_split(" ".join(group), max_chunk))
     return chunks
 
 
-def _group_sentences(units: list[str], max_chunk: int, per_chunk: int) -> list[list[str]]:
-    """Batch consecutive sentences, respecting both the count and the char cap."""
+def _group_sentences(
+    units: list[str], max_chunk: int, per_chunk: int, previous_seconds: float = 0.0
+) -> list[list[str]]:
+    """
+    Batch consecutive sentences into chunks of comparable speaking time.
+
+    Three limits apply at once: the sentence count, the character cap, and a
+    duration limit derived from the PREVIOUS chunk. The last one is what makes
+    the render pipeline self-sustaining: rendering costs roughly 0.42 of the
+    audio it produces, so a chunk at most ~2.2x its predecessor always finishes
+    inside that predecessor's playback. A single sentence over the limit still
+    stands alone — it cannot be split without cutting mid-phrase.
+    """
     if per_chunk <= 1:
         return [[unit] for unit in units]
     groups: list[list[str]] = []
     current: list[str] = []
     length = 0
+    seconds = 0.0
+    limit = _duration_limit(previous_seconds)
     for unit in units:
+        unit_seconds = _speech_seconds(unit)
         added = len(unit) + (1 if current else 0)
-        if current and (len(current) >= per_chunk or length + added > max_chunk):
+        too_big = (
+            len(current) >= per_chunk
+            or length + added > max_chunk
+            or seconds + unit_seconds > limit
+        )
+        if current and too_big:
             groups.append(current)
-            current, length, added = [], 0, len(unit)
+            limit = _duration_limit(seconds)
+            current, length, seconds = [], 0, 0.0
+            added = len(unit)
         current.append(unit)
         length += added
+        seconds += unit_seconds
     if current:
         groups.append(current)
     return groups
+
+
+def _duration_limit(previous_seconds: float) -> float:
+    """Longest a chunk may be, given how long the previous one plays."""
+    if previous_seconds <= 0:
+        return float("inf")
+    return max(previous_seconds * MAX_CHUNK_GROWTH, MIN_CHUNK_SECONDS)
 
 
 def _validate_language(language: str | None) -> str | None:
@@ -299,6 +378,18 @@ def _resolve_clip(voices_dir: Path, voice: str | None, reference_clip: str | Non
     return None
 
 
+class _Rendered(NamedTuple):
+    """One chunk written to disk and ready to play."""
+
+    #: 1-based chunk number, matching the filename suffix.
+    number: int
+    path: Path
+    #: Measured spoken length of the written WAV, in seconds.
+    seconds: float
+    #: When the render finished (time.monotonic), for measuring dry time.
+    ready_at: float
+
+
 @dataclass(eq=False)
 class _Job:
     """One accepted speak request, waiting on or inside the worker."""
@@ -318,6 +409,10 @@ class _Job:
     synthesis_s: float = 0.0
     duration_s: float = 0.0
     device: str | None = None
+    #: Seconds from job start to the first audible chunk.
+    first_audio_s: float | None = None
+    #: Silence at each boundary the player could not avoid, in seconds.
+    gaps: list[float] = field(default_factory=list)
 
     def summary(self) -> dict:
         return {
@@ -329,6 +424,8 @@ class _Job:
             "synthesis_s": round(self.synthesis_s, 2),
             "duration_s": round(self.duration_s, 2),
             "device": self.device,
+            "first_audio_s": self.first_audio_s,
+            "max_gap_s": max(self.gaps, default=None),
             "cancelled": self.cancelled.is_set(),
         }
 
@@ -699,14 +796,19 @@ class Speaker:
         else:
             self._render_only(job, total)
         if not job.cancelled.is_set():
+            first = f"{job.first_audio_s:.2f}s" if job.first_audio_s is not None else "n/a"
+            gap = f"{max(job.gaps):.2f}s" if job.gaps else "none"
             logger.info(
-                "[speak] %s done: %d/%d chunks, %.2fs synthesis, %.2fs audio, played %d",
+                "[speak] %s done: %d/%d chunks, %.2fs synthesis, %.2fs audio, played %d, "
+                "first audio %s, worst gap %s",
                 job.message_id,
                 len(job.written),
                 total,
                 job.synthesis_s,
                 job.duration_s,
                 job.played_chunks,
+                first,
+                gap,
             )
 
     def _render_only(self, job: _Job, total: int) -> None:
@@ -724,76 +826,153 @@ class Speaker:
 
     def _render_and_play(self, job: _Job, total: int) -> None:
         """
-        Render the next chunk while the current one is playing.
+        Render ahead into a bounded buffer and play from it.
 
-        play(wait=True) blocks until the WAV has finished, and generate() takes
-        seconds, so a plain render-then-play loop leaves the GPU idle for the
-        whole utterance: the silence at every chunk boundary was exactly one
-        render's worth. Starting the next render BEFORE the play call hides
-        that work behind audio that is already coming out of the speakers.
+        Rendering costs about 0.4x the time the audio takes to play, so the work
+        only has to start early enough. Three things keep the player fed:
 
-        Only the rendering runs ahead; playback stays strictly in order. One
-        chunk of lookahead is enough because rendering is comfortably faster
-        than realtime, so the next chunk is ready before the current one ends.
+        - chunk sizes are smoothed against each other when the text is split
+          (see `split_sentences`), so a chunk's render fits inside the playback
+          of the one before it by construction;
+        - renders run on their own thread and feed a small queue, so the surplus
+          from chunks that render faster than they play is banked instead of
+          being thrown away at each boundary;
+        - playback waits for `PREROLL_SECONDS` of audio, which covers an opening
+          sentence too short to hide the second render.
+
+        Playback stays strictly in order. The queue is bounded, so a long reply
+        cannot make the GPU run a minute ahead of the speakers, and a cancel
+        discards at most `BUFFER_CHUNKS` chunks.
         """
-        slots: dict[int, Path | None] = {}
-        ahead: threading.Thread | None = self._start_render(job, 1, slots)
-        try:
-            for index in range(1, total + 1):
-                if ahead is not None:
-                    ahead.join()
-                    ahead = None
-                if job.cancelled.is_set():
-                    logger.info("[speak] %s cancelled before chunk %d/%d", job.message_id, index, total)
-                    return
-                path = slots.pop(index, None)
-                # Start the next one first: that ordering is the whole point.
-                if index < total and not job.cancelled.is_set():
-                    ahead = self._start_render(job, index + 1, slots)
-                if path is None:
-                    continue
-                played, reason = play(path, wait=True)
-                if not played:
-                    logger.warning(
-                        "[speak] %s chunk %d/%d not played: %s", job.message_id, index, total, reason
-                    )
-                    job.errors.append(f"chunk {index}: {reason or 'playback failed'}")
-                    continue
-                job.played_chunks += 1
-                if job.pause_s > 0 and index < total:
-                    time.sleep(job.pause_s)
-        finally:
-            if ahead is not None:
-                ahead.join()
-
-    def _start_render(
-        self, job: _Job, index: int, slots: dict[int, Path | None]
-    ) -> threading.Thread:
-        """Begin rendering one chunk in the background; the result lands in slots."""
-        thread = threading.Thread(
-            target=self._render_into,
-            args=(job, index, slots),
-            name=f"speak-render-{job.message_id}-{index}",
+        stop = threading.Event()
+        ready: queue.Queue[_Rendered | None] = queue.Queue(maxsize=BUFFER_CHUNKS)
+        producer = threading.Thread(
+            target=self._fill_buffer,
+            args=(job, ready, stop),
+            name=f"speak-render-{job.message_id}",
             daemon=True,
         )
-        thread.start()
-        return thread
-
-    def _render_into(self, job: _Job, index: int, slots: dict[int, Path | None]) -> None:
-        """Thread body: render one chunk into its slot, and never raise."""
+        producer.start()
+        started = time.monotonic()
+        pause_end = started
         try:
-            slots[index] = self._render_chunk(job, index, job.chunks[index - 1])
-        except Exception:  # noqa: BLE001 — one chunk must not kill the worker
-            logger.exception(
-                "[speak] %s chunk %d/%d crashed the render thread",
-                job.message_id,
-                index,
-                len(job.chunks),
-            )
-            slots[index] = None
+            banked, finished = self._preroll(job, ready)
+            while True:
+                if not banked:
+                    if finished:
+                        return
+                    item = self._take(job, ready)
+                    if item is None:
+                        return
+                    banked.append(item)
+                rendered = banked.pop(0)
+                if job.cancelled.is_set():
+                    logger.info(
+                        "[speak] %s cancelled before chunk %d/%d",
+                        job.message_id,
+                        rendered.number,
+                        total,
+                    )
+                    return
+                if job.first_audio_s is None:
+                    job.first_audio_s = round(time.monotonic() - started, 2)
+                else:
+                    # Silence nobody asked for: the next chunk was not ready
+                    # when the pause after the previous one ended.
+                    job.gaps.append(round(max(0.0, rendered.ready_at - pause_end), 2))
+                played, reason = play(rendered.path, wait=True)
+                if not played:
+                    logger.warning(
+                        "[speak] %s chunk %d/%d not played: %s",
+                        job.message_id,
+                        rendered.number,
+                        total,
+                        reason,
+                    )
+                    job.errors.append(f"chunk {rendered.number}: {reason or 'playback failed'}")
+                    pause_end = time.monotonic()
+                    continue
+                job.played_chunks += 1
+                if job.pause_s > 0 and rendered.number < total:
+                    time.sleep(job.pause_s)
+                pause_end = time.monotonic()
+        finally:
+            stop.set()
+            producer.join()
 
-    def _render_chunk(self, job: _Job, index: int, sentence: str) -> Path | None:
-        """Synthesize and write one chunk. Returns its path, or None on failure."""
+    def _fill_buffer(
+        self, job: _Job, ready: queue.Queue[_Rendered | None], stop: threading.Event
+    ) -> None:
+        """Thread body: render every chunk in order into the buffer."""
+        total = len(job.chunks)
+        try:
+            for index, sentence in enumerate(job.chunks, start=1):
+                if stop.is_set() or job.cancelled.is_set():
+                    logger.info(
+                        "[speak] %s cancelled before chunk %d/%d", job.message_id, index, total
+                    )
+                    return
+                rendered = self._render_chunk(job, index, sentence)
+                if rendered is None:
+                    continue
+                path, seconds = rendered
+                item = _Rendered(index, path, seconds, time.monotonic())
+                if not self._put(ready, item, stop, job):
+                    return
+        finally:
+            # Never leave the consumer waiting on a producer that is gone.
+            self._put(ready, None, stop, job)
+
+    def _preroll(
+        self, job: _Job, ready: queue.Queue[_Rendered | None]
+    ) -> tuple[list[_Rendered], bool]:
+        """
+        Collect rendered chunks until `PREROLL_SECONDS` of audio is banked.
+
+        Returns the banked chunks and whether the producer is already finished,
+        because the end-of-stream marker is consumed here and the caller must not
+        wait for it again. What exists is returned when the reply ends first, so a
+        short reply still plays; the list is empty only if nothing was rendered.
+        """
+        banked: list[_Rendered] = []
+        seconds = 0.0
+        while seconds < PREROLL_SECONDS:
+            item = self._take(job, ready)
+            if item is None:
+                return banked, True
+            banked.append(item)
+            seconds += item.seconds
+        return banked, False
+
+    @staticmethod
+    def _put(
+        ready: queue.Queue[_Rendered | None],
+        item: _Rendered | None,
+        stop: threading.Event,
+        job: _Job,
+    ) -> bool:
+        """Blocking put that gives up when the job goes away. False = gave up."""
+        while True:
+            try:
+                ready.put(item, timeout=0.2)
+                return True
+            except queue.Full:
+                if stop.is_set() or job.cancelled.is_set():
+                    return False
+
+    @staticmethod
+    def _take(job: _Job, ready: queue.Queue[_Rendered | None]) -> _Rendered | None:
+        """Next rendered chunk, or None once the producer is done or cancelled."""
+        while True:
+            try:
+                return ready.get(timeout=0.2)
+            except queue.Empty:
+                if job.cancelled.is_set():
+                    return None
+
+    def _render_chunk(self, job: _Job, index: int, sentence: str) -> tuple[Path, float] | None:
+        """Synthesize and write one chunk. Returns its path and length, or None."""
+
         total = len(job.chunks)
         logger.info(
             "[speak] %s rendering chunk %d/%d (%d chars)",
@@ -838,9 +1017,10 @@ class Speaker:
 
         job.written.append(name)
         job.synthesis_s += result.get("elapsed_s", 0.0)
-        job.duration_s += duration_s(result["wav"], result["sample_rate"])
+        seconds = duration_s(result["wav"], result["sample_rate"])
+        job.duration_s += seconds
         job.device = job.device or result.get("device")
-        return path
+        return path, seconds
 
     # -- helpers --------------------------------------------------------------
     @staticmethod

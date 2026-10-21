@@ -20,7 +20,13 @@ import pytest
 
 from mcp_agent_chatterbox.errors import ToolFault
 from mcp_agent_chatterbox.registry import SUPPORTED_LANGUAGES, T3_MODELS
-from mcp_agent_chatterbox.speak import Speaker, split_sentences
+from mcp_agent_chatterbox.speak import (
+    CHARS_PER_SECOND,
+    MAX_CHUNK_GROWTH,
+    MIN_CHUNK_SECONDS,
+    Speaker,
+    split_sentences,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -388,6 +394,9 @@ class TestPlayback:
         # play() blocks the worker thread, so rendering has to run ahead of it.
         # Without that overlap the GPU idles for the whole utterance and every
         # chunk boundary costs a full render's worth of silence.
+        # Preroll off: 0.1s fake chunks would otherwise render the whole reply
+        # before playback starts, which would hide the overlap under test.
+        monkeypatch.setattr("mcp_agent_chatterbox.speak.PREROLL_SECONDS", 0.0)
         events: list[tuple[str, str]] = []
         lock = threading.Lock()
 
@@ -426,6 +435,50 @@ class TestPlayback:
         # ...but playback itself stayed strictly in order.
         played = [what for kind, what in events if kind == "play-start"]
         assert played == [f"{payload['message_id']}_{i}.wav" for i in (1, 2, 3)]
+
+    def test_playback_waits_for_a_preroll(self, cfg, fake_engine, monkeypatch):
+        # A short opening sentence cannot hide the next render, so playback does
+        # not start until enough audio is already on disk to cover it.
+        cfg.sentences_per_chunk = 1
+        events: list[tuple[str, str]] = []
+        real_synthesize = fake_engine.synthesize
+
+        def record_synthesize(text, model_key, **kwargs):
+            result = real_synthesize(text, model_key, **kwargs)
+            events.append(("synth", text))
+            return result
+
+        def record_play(path, wait=True):
+            events.append(("play", Path(path).name))
+            return True, None
+
+        # Fake chunks are 0.1s, so 0.25s of preroll means three of them.
+        monkeypatch.setattr("mcp_agent_chatterbox.speak.PREROLL_SECONDS", 0.25)
+        monkeypatch.setattr("mcp_agent_chatterbox.speak.player_available", lambda: True)
+        monkeypatch.setattr("mcp_agent_chatterbox.speak.play", record_play)
+        fake_engine.synthesize = record_synthesize
+
+        payload, last = run(cfg, fake_engine, "Alpha. Beta. Gamma. Delta.", play_audio=True)
+        first_play = events.index(("play", f"{payload['message_id']}_1.wav"))
+        rendered_first = sum(1 for kind, _ in events[:first_play] if kind == "synth")
+        assert rendered_first >= 3, events
+        assert last["played_chunks"] == 4
+
+    def test_first_audio_and_gap_are_reported(self, cfg, fake_engine, monkeypatch):
+        # Dry time is what the pipeline is supposed to avoid, so a run has to
+        # say whether it happened rather than leave it to the listener's ear.
+        monkeypatch.setattr("mcp_agent_chatterbox.speak.player_available", lambda: True)
+        monkeypatch.setattr("mcp_agent_chatterbox.speak.play", lambda *a, **k: (True, None))
+        cfg.sentences_per_chunk = 1
+        _, last = run(cfg, fake_engine, "Alpha. Beta. Gamma.", play_audio=True)
+        assert last["first_audio_s"] is not None
+        assert last["first_audio_s"] >= 0
+        assert last["max_gap_s"] == 0.0
+
+    def test_no_playback_means_no_gap_figures(self, cfg, fake_engine):
+        _, last = run(cfg, fake_engine, play_audio=False)
+        assert last["first_audio_s"] is None
+        assert last["max_gap_s"] is None
 
     def test_failure_is_reported_not_raised(self, cfg, fake_engine, monkeypatch):
         # A machine with no sound card must still get its chunk files written.
@@ -573,6 +626,9 @@ class TestQueue:
 
             def time(self):
                 return real_time.time()
+
+            def monotonic(self):
+                return real_time.monotonic()
 
         clock = _Clock()
         monkeypatch.setattr("mcp_agent_chatterbox.speak.time", clock)
@@ -735,6 +791,31 @@ class TestSentenceSplitting:
     def test_batching_of_one_is_the_old_behaviour(self):
         chunks = split_sentences("One. Two. Three.", 500, 1)
         assert chunks == ["One.", "Two.", "Three."]
+
+    def test_a_chunk_never_outgrows_the_one_before_it(self):
+        # The renderer has to finish chunk N+1 inside chunk N's playback, or the
+        # player runs dry. Rendering costs ~0.42 of the audio it produces, so a
+        # chunk at most ~2.2x its predecessor still fits; this is the rule that
+        # keeps that true instead of hoping the sentence count works out.
+        sentences = ["Opening line."] + [
+            f"This is sentence {i} with a few words in it." for i in range(1, 20)
+        ]
+        chunks = split_sentences(" ".join(sentences), 500, 3)
+        assert len(chunks) > 2
+        for previous, current in zip(chunks, chunks[1:]):
+            allowed = max(
+                len(previous) / CHARS_PER_SECOND * MAX_CHUNK_GROWTH,
+                MIN_CHUNK_SECONDS,
+            )
+            assert len(current) / CHARS_PER_SECOND <= allowed, (previous, current)
+
+    def test_evenly_sized_sentences_still_batch(self):
+        # Two equal sentences are exactly 2x one of them, so the growth factor
+        # must leave room for that. Otherwise every sentence would end up alone
+        # and the staccato delivery would come back through the timing rule.
+        sentence = "This sentence is about seventy characters long, give or take a word."
+        chunks = split_sentences(" ".join([sentence] * 13), 500, 3)
+        assert any(chunk.count(".") > 1 for chunk in chunks), chunks
 
     def test_a_long_sentence_is_not_rejoined_by_batching(self):
         # hard_split pieces must each stand alone; merging them back would

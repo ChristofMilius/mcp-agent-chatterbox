@@ -232,6 +232,9 @@ def _cmd_speak(args) -> int:
             f"(synthesis {last.get('synthesis_s')}s)"
         )
     print(f"Played  : {last.get('played_chunks', 0)} chunk(s)")
+    if last.get("first_audio_s") is not None:
+        gap = last.get("max_gap_s")
+        print(f"Timing  : first audio {last['first_audio_s']}s, worst gap {gap}s")
     for error in last.get("errors", []):
         print(f"Warning : {error}", file=sys.stderr)
     return 0

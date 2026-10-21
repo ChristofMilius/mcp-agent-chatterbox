@@ -37,6 +37,7 @@ MCP server  (mcp_agent_chatterbox.server, cli: `serve`)
    ▼
 worker      (mcp_agent_chatterbox.worker, cli: `worker`)
    │  Speaker → ChatterboxEngine → model on the GPU
+   │  render-ahead buffer, then playback in order
    ▼
 sentence-batched chunks → tts_output/*.wav → speakers
 ```
@@ -459,8 +460,8 @@ Speaking stays an explicit choice, by tool call or by `/speak`.
 
 The main call. Accepts text, hands it to the resident worker, and returns once
 the whole reply has been spoken. The worker renders it chunk by chunk into
-`<message_id>_<n>.wav` and plays the chunks in order, rendering the *next* one
-while the current one is still playing — so a boundary costs the configured
+`<message_id>_<n>.wav` and plays the chunks in order. Rendering runs on its own
+thread, a few chunks ahead of the player, so a boundary costs the configured
 pause, not a full render's worth of silence.
 
 If no worker is running it returns `worker_not_running` with the command to
@@ -505,13 +506,28 @@ longer than that is split further on word boundaries. The chunks share the same
 voice, style knobs and reference clip, and are played with
 `CHATTERBOX_CHUNK_PAUSE_MS` of silence between them.
 
+A batch is also capped by **speaking time**, not just by sentence count. Measured
+on this stack, speech runs at about 17.5 characters per second and rendering costs
+about 0.4× the audio it produces — so a chunk may be at most ~2.2× as long as the
+one before it and still be ready before that one finishes playing. Chunks therefore
+ramp up from the short opening sentence instead of jumping straight to a full
+batch. Without that rule the second chunk could take longer to render than the
+first takes to play, and the player would sit silent with text still waiting.
+
+Playback waits until roughly two seconds of audio are already on disk, which covers
+an opening sentence too short to hide the next render, then keeps up to three
+rendered chunks banked ahead. Nothing is timed at runtime: the queue paces the
+renderer, so a machine that renders faster simply stays further ahead.
+
 The call returns when the reply has been spoken — it reports the message id, the
 chunk files that were written and played, and the measured synthesis and audio
-durations. Playback is strictly in order while rendering runs one chunk ahead, so
-the first sentence is audible within seconds and the rest follow without a render
-gap between them. Files stay on disk and replay in filename order; there is no
-stitched final file. `stop_speech` cuts the current sentence and cancels
-everything still queued.
+durations. `first_audio_s` is the time from submission to the first audible chunk
+and `max_gap_s` is the worst silence the player could not avoid, so dryness is
+measurable instead of something you have to hear. Playback is strictly in order
+while rendering runs ahead, so the first sentence is audible within seconds and the
+rest follow without a render gap between them. Files stay on disk and replay in
+filename order; there is no stitched final file. `stop_speech` cuts the current
+sentence and cancels everything still queued.
 
 Because the audio belongs to the worker, it keeps playing even if the MCP server
 process goes away when the turn ends.
@@ -857,7 +873,7 @@ No secrets are involved.
 | `CHATTERBOX_AUTOPLAY` | `1` | Play each chunk as it renders |
 | `CHATTERBOX_MAX_CHARS` | `4000` | Reject longer single requests |
 | `CHATTERBOX_MAX_CHUNK_CHARS` | `500` | Hard cap for one rendered chunk — one sentence, or a whole batch. A single sentence longer than this is split on word boundaries |
-| `CHATTERBOX_SENTENCES_PER_CHUNK` | `3` | Sentences batched into one chunk. Every chunk is a separate `generate()` call costing a pause and a fresh prosody start, so `1` makes short-sentence speech staccato. The first sentence always stays alone (fast start) and a batch never exceeds `CHATTERBOX_MAX_CHUNK_CHARS` |
+| `CHATTERBOX_SENTENCES_PER_CHUNK` | `3` | Sentences batched into one chunk. Every chunk is a separate `generate()` call costing a pause and a fresh prosody start, so `1` makes short-sentence speech staccato. The first sentence always stays alone (fast start); a batch never exceeds `CHATTERBOX_MAX_CHUNK_CHARS`, and it is capped by speaking time too, so it can never grow past ~2.2× the playback length of the chunk before it |
 | `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence between played chunks — between sentence groups when batching, not between every sentence |
 | `CHATTERBOX_WORKER_PORT` | `8765` | Loopback port the worker listens on. The server and the worker read this same value; point them at different ones and `speak` reports `worker_not_running` while a healthy worker sits on the other port |
 | `CHATTERBOX_WORKER_CONNECT_TIMEOUT` | `5` | Seconds to wait for the **connection** to the worker. Bounds the connect only, never the reply — rendering takes as long as the speech takes, and cutting the read off would abandon audio that is still being spoken |
@@ -1012,8 +1028,10 @@ enough.
 it (`mcp-agent-chatterbox worker`) and try again — the server never synthesizes
 on its own. With a worker running, `tts_status` -> `worker` shows the queue:
 `pending` above zero means it is still rendering, and `last` carries `written`,
-`played_chunks` and `errors` for the most recent utterance. Playback needs
-Windows; on other platforms the chunk files are still written. `stop_speech`
+`played_chunks`, `errors`, `first_audio_s` and `max_gap_s` for the most recent
+utterance — a `max_gap_s` that keeps coming back well above the configured chunk
+pause means the renderer is falling behind the player on this machine. Playback
+needs Windows; on other platforms the chunk files are still written. `stop_speech`
 clears anything queued.
 
 **`worker_not_running`.** Nothing is listening on `CHATTERBOX_WORKER_PORT`. The

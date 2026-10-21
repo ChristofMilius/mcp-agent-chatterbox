@@ -439,6 +439,8 @@ def _dispatch(speaker, request: dict) -> tuple[dict, bool]:
                 "played_chunks": last.get("played_chunks", 0),
                 "synthesis_s": last.get("synthesis_s", 0.0),
                 "duration_s": last.get("duration_s", 0.0),
+                "first_audio_s": last.get("first_audio_s"),
+                "max_gap_s": last.get("max_gap_s"),
                 "device": last.get("device"),
                 "output_dir": payload["output_dir"],
                 "model": payload["model"],
