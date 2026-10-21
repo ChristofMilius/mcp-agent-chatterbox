@@ -544,6 +544,36 @@ process goes away when the turn ends.
   "exaggeration": 0.4 }
 ```
 
+### What it actually costs
+
+Measured 2026-10-21 on the development machine (Ryzen 5 5600, RTX 3060 12 GB,
+`nano`, voice `seven`, `cuda:1`), same 1494-character, 21-sentence text twice —
+once on a freshly started worker, once warm. Nine chunks both times.
+
+| Run | Audio | Synthesis | First audio | Worst gap | Wall clock |
+|---|---|---|---|---|---|
+| Cold worker | 84.0 s | 36.9 s | 47.1 s | 0.0 s | 134.4 s |
+| Warm worker | 81.9 s | 34.7 s | 2.1 s | 0.0 s | 87.3 s |
+
+Read the warm row as the shape of the pipeline: `first_audio_s` plus the audio
+duration plus the pause budget accounts for essentially the whole wall clock
+(2.1 + 81.9 + 2.0 = 86.0 s against 87.3 s measured), and `max_gap_s` is zero, so
+every boundary was covered by a chunk that had finished rendering while the
+previous one played. The cold row is the same pipeline behind a model load —
+the first `generate()` pays for torch, the weights and CUDA init, and there is
+nothing to play until it returns. That cost belongs to the first call of a worker
+session, not to the streaming design.
+
+Chunk lengths in that run, in seconds of audio: 4.4 → 8.1 → 11.8 → 15.1 → 16.3 →
+4.8 → 5.8 → 9.0 → 8.8. The ramp at the start is the duration cap at work. The
+short 4.8 s chunk after the 16.3 s one is what the buffer is for: by the time the
+long chunk finished, the following ones were already on disk, so the short one
+never had to be waited for. The dangerous direction is the reverse — a short
+chunk followed by a much longer one — and that is exactly what the cap keeps out
+of the list. Absolute numbers are machine-specific; `first_audio_s` and
+`max_gap_s` in the `speak` response are the two figures to compare on your own
+hardware.
+
 ### `tts_status`
 
 Readiness without loading anything: whether the worker is running, the models
