@@ -194,14 +194,14 @@ def register(server, ctx) -> None:
 
         Text is cut into chunks of whole sentences (up to three by default, see
         CHATTERBOX_SENTENCES_PER_CHUNK, always capped by CHATTERBOX_MAX_CHUNK_CHARS
-        characters): each chunk is rendered, saved and played, then the next one
-        follows, so the reply plays continuously from the first sentence. Files
-        land in the output directory and replay in filename order. Returns JSON
-        with the message id, the chunk files that were written and played, and the
-        measured synthesis time. The first call in a fresh worker downloads the
-        model from Hugging Face (hundreds of MB to a few GB) and can take a while;
-        a resident worker keeps the weights loaded, so later calls pay nothing for
-        it.
+        characters). Chunks are played in order while the next one is already
+        rendering, so the reply plays continuously from the first sentence instead
+        of pausing for a fresh synthesis at every boundary. Files land in the
+        output directory and replay in filename order. Returns JSON with the
+        message id, the chunk files that were written and played, and the measured
+        synthesis time. The first call in a fresh worker downloads the model from
+        Hugging Face (hundreds of MB to a few GB) and can take a while; a resident
+        worker keeps the weights loaded, so later calls pay nothing for it.
         """
         try:
             response = send_request(

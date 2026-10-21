@@ -458,8 +458,10 @@ Speaking stays an explicit choice, by tool call or by `/speak`.
 ### `speak`
 
 The main call. Accepts text, hands it to the resident worker, and returns once
-the whole reply has been spoken. The worker renders it chunk by chunk,
-writes `<message_id>_<n>.wav` files and plays each as it lands.
+the whole reply has been spoken. The worker renders it chunk by chunk into
+`<message_id>_<n>.wav` and plays the chunks in order, rendering the *next* one
+while the current one is still playing — so a boundary costs the configured
+pause, not a full render's worth of silence.
 
 If no worker is running it returns `worker_not_running` with the command to
 start one. It never falls back to synthesizing in the server process.
@@ -505,10 +507,11 @@ voice, style knobs and reference clip, and are played with
 
 The call returns when the reply has been spoken — it reports the message id, the
 chunk files that were written and played, and the measured synthesis and audio
-durations. The worker renders one chunk at a time and plays each as it lands, so
-the first sentence is audible within seconds and the rest follow continuously.
-Files stay on disk and replay in filename order; there is no stitched final file.
-`stop_speech` cuts the current sentence and cancels everything still queued.
+durations. Playback is strictly in order while rendering runs one chunk ahead, so
+the first sentence is audible within seconds and the rest follow without a render
+gap between them. Files stay on disk and replay in filename order; there is no
+stitched final file. `stop_speech` cuts the current sentence and cancels
+everything still queued.
 
 Because the audio belongs to the worker, it keeps playing even if the MCP server
 process goes away when the turn ends.

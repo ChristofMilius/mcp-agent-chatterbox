@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -379,6 +381,51 @@ class TestPlayback:
         payload, last = run(cfg, fake_engine, "Alpha. Beta. Gamma.", play_audio=True)
         assert [path.name for path in calls] == payload["files"]
         assert last["played_chunks"] == 3
+
+    def test_next_chunk_renders_while_the_current_one_plays(
+        self, cfg, fake_engine, monkeypatch
+    ):
+        # play() blocks the worker thread, so rendering has to run ahead of it.
+        # Without that overlap the GPU idles for the whole utterance and every
+        # chunk boundary costs a full render's worth of silence.
+        events: list[tuple[str, str]] = []
+        lock = threading.Lock()
+
+        def record(kind: str, what: str) -> None:
+            with lock:
+                events.append((kind, what))
+
+        real_synthesize = fake_engine.synthesize
+
+        def slow_synthesize(text, model_key, **kwargs):
+            record("synth-start", text)
+            time.sleep(0.1)
+            result = real_synthesize(text, model_key, **kwargs)
+            record("synth-end", text)
+            return result
+
+        def slow_play(path, wait=True):
+            record("play-start", Path(path).name)
+            time.sleep(0.4)
+            record("play-end", Path(path).name)
+            return True, None
+
+        fake_engine.synthesize = slow_synthesize
+        monkeypatch.setattr("mcp_agent_chatterbox.speak.player_available", lambda: True)
+        monkeypatch.setattr("mcp_agent_chatterbox.speak.play", slow_play)
+
+        cfg.sentences_per_chunk = 1
+        payload, last = run(cfg, fake_engine, "Alpha. Beta. Gamma.", play_audio=True)
+        assert last["played_chunks"] == 3
+
+        # The second chunk began rendering before the first had finished playing.
+        first_play_end = events.index(("play-end", f"{payload['message_id']}_1.wav"))
+        second_synth_start = events.index(("synth-start", "Beta."))
+        assert second_synth_start < first_play_end, events
+
+        # ...but playback itself stayed strictly in order.
+        played = [what for kind, what in events if kind == "play-start"]
+        assert played == [f"{payload['message_id']}_{i}.wav" for i in (1, 2, 3)]
 
     def test_failure_is_reported_not_raised(self, cfg, fake_engine, monkeypatch):
         # A machine with no sound card must still get its chunk files written.

@@ -694,81 +694,153 @@ class Speaker:
     def _render(self, job: _Job) -> None:
         job.out_dir.mkdir(parents=True, exist_ok=True)
         total = len(job.chunks)
+        if job.should_play and player_available():
+            self._render_and_play(job, total)
+        else:
+            self._render_only(job, total)
+        if not job.cancelled.is_set():
+            logger.info(
+                "[speak] %s done: %d/%d chunks, %.2fs synthesis, %.2fs audio, played %d",
+                job.message_id,
+                len(job.written),
+                total,
+                job.synthesis_s,
+                job.duration_s,
+                job.played_chunks,
+            )
+
+    def _render_only(self, job: _Job, total: int) -> None:
+        """Render every chunk when nothing is competing for the time."""
         for index, sentence in enumerate(job.chunks, start=1):
             if job.cancelled.is_set():
                 logger.info("[speak] %s cancelled before chunk %d/%d", job.message_id, index, total)
                 return
-            logger.info(
-                "[speak] %s rendering chunk %d/%d (%d chars)",
+            if self._render_chunk(job, index, sentence) is None:
+                continue
+            if job.should_play:
+                # Asked to play, but this host has no player: one error per
+                # chunk, because that is one missing file per chunk.
+                job.errors.append(f"chunk {index}: no audio player")
+
+    def _render_and_play(self, job: _Job, total: int) -> None:
+        """
+        Render the next chunk while the current one is playing.
+
+        play(wait=True) blocks until the WAV has finished, and generate() takes
+        seconds, so a plain render-then-play loop leaves the GPU idle for the
+        whole utterance: the silence at every chunk boundary was exactly one
+        render's worth. Starting the next render BEFORE the play call hides
+        that work behind audio that is already coming out of the speakers.
+
+        Only the rendering runs ahead; playback stays strictly in order. One
+        chunk of lookahead is enough because rendering is comfortably faster
+        than realtime, so the next chunk is ready before the current one ends.
+        """
+        slots: dict[int, Path | None] = {}
+        ahead: threading.Thread | None = self._start_render(job, 1, slots)
+        try:
+            for index in range(1, total + 1):
+                if ahead is not None:
+                    ahead.join()
+                    ahead = None
+                if job.cancelled.is_set():
+                    logger.info("[speak] %s cancelled before chunk %d/%d", job.message_id, index, total)
+                    return
+                path = slots.pop(index, None)
+                # Start the next one first: that ordering is the whole point.
+                if index < total and not job.cancelled.is_set():
+                    ahead = self._start_render(job, index + 1, slots)
+                if path is None:
+                    continue
+                played, reason = play(path, wait=True)
+                if not played:
+                    logger.warning(
+                        "[speak] %s chunk %d/%d not played: %s", job.message_id, index, total, reason
+                    )
+                    job.errors.append(f"chunk {index}: {reason or 'playback failed'}")
+                    continue
+                job.played_chunks += 1
+                if job.pause_s > 0 and index < total:
+                    time.sleep(job.pause_s)
+        finally:
+            if ahead is not None:
+                ahead.join()
+
+    def _start_render(
+        self, job: _Job, index: int, slots: dict[int, Path | None]
+    ) -> threading.Thread:
+        """Begin rendering one chunk in the background; the result lands in slots."""
+        thread = threading.Thread(
+            target=self._render_into,
+            args=(job, index, slots),
+            name=f"speak-render-{job.message_id}-{index}",
+            daemon=True,
+        )
+        thread.start()
+        return thread
+
+    def _render_into(self, job: _Job, index: int, slots: dict[int, Path | None]) -> None:
+        """Thread body: render one chunk into its slot, and never raise."""
+        try:
+            slots[index] = self._render_chunk(job, index, job.chunks[index - 1])
+        except Exception:  # noqa: BLE001 — one chunk must not kill the worker
+            logger.exception(
+                "[speak] %s chunk %d/%d crashed the render thread",
+                job.message_id,
+                index,
+                len(job.chunks),
+            )
+            slots[index] = None
+
+    def _render_chunk(self, job: _Job, index: int, sentence: str) -> Path | None:
+        """Synthesize and write one chunk. Returns its path, or None on failure."""
+        total = len(job.chunks)
+        logger.info(
+            "[speak] %s rendering chunk %d/%d (%d chars)",
+            job.message_id,
+            index,
+            total,
+            len(sentence),
+        )
+        try:
+            result = self.engine.synthesize(sentence, job.model, **job.knobs)
+        except ToolFault as fault:
+            logger.warning(
+                "[speak] %s chunk %d/%d failed: %s - %s",
                 job.message_id,
                 index,
                 total,
-                len(sentence),
+                fault.reason,
+                fault.message,
             )
-            try:
-                result = self.engine.synthesize(sentence, job.model, **job.knobs)
-            except ToolFault as fault:
-                logger.warning(
-                    "[speak] %s chunk %d/%d failed: %s - %s",
-                    job.message_id,
-                    index,
-                    total,
-                    fault.reason,
-                    fault.message,
-                )
-                job.errors.append(f"chunk {index}: {fault.reason}")
-                continue
-            except Exception as exc:  # noqa: BLE001 — keep the rest of the reply
-                logger.error(
-                    "[speak] %s chunk %d/%d raised %s",
-                    job.message_id,
-                    index,
-                    total,
-                    type(exc).__name__,
-                    exc_info=True,
-                )
-                job.errors.append(f"chunk {index}: {type(exc).__name__}")
-                continue
+            job.errors.append(f"chunk {index}: {fault.reason}")
+            return None
+        except Exception as exc:  # noqa: BLE001 — keep the rest of the reply
+            logger.error(
+                "[speak] %s chunk %d/%d raised %s",
+                job.message_id,
+                index,
+                total,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            job.errors.append(f"chunk {index}: {type(exc).__name__}")
+            return None
 
-            name = self._chunk_name(job, index)
-            path = job.out_dir / name
-            try:
-                write_wav(result["wav"], result["sample_rate"], path)
-            except OSError as exc:
-                logger.error("[speak] %s could not write %s: %s", job.message_id, name, exc)
-                job.errors.append(f"chunk {index}: write failed")
-                continue
+        name = self._chunk_name(job, index)
+        path = job.out_dir / name
+        try:
+            write_wav(result["wav"], result["sample_rate"], path)
+        except OSError as exc:
+            logger.error("[speak] %s could not write %s: %s", job.message_id, name, exc)
+            job.errors.append(f"chunk {index}: write failed")
+            return None
 
-            job.written.append(name)
-            job.synthesis_s += result.get("elapsed_s", 0.0)
-            job.duration_s += duration_s(result["wav"], result["sample_rate"])
-            job.device = job.device or result.get("device")
-
-            if not job.should_play:
-                continue
-            if not player_available():
-                job.errors.append(f"chunk {index}: no audio player")
-                continue
-            if job.cancelled.is_set():
-                return
-            played, reason = play(path, wait=True)
-            if not played:
-                logger.warning("[speak] %s chunk %d/%d not played: %s", job.message_id, index, total, reason)
-                job.errors.append(f"chunk {index}: {reason or 'playback failed'}")
-                continue
-            job.played_chunks += 1
-            if job.pause_s > 0 and index < total:
-                time.sleep(job.pause_s)
-
-        logger.info(
-            "[speak] %s done: %d/%d chunks, %.2fs synthesis, %.2fs audio, played %d",
-            job.message_id,
-            len(job.written),
-            total,
-            job.synthesis_s,
-            job.duration_s,
-            job.played_chunks,
-        )
+        job.written.append(name)
+        job.synthesis_s += result.get("elapsed_s", 0.0)
+        job.duration_s += duration_s(result["wav"], result["sample_rate"])
+        job.device = job.device or result.get("device")
+        return path
 
     # -- helpers --------------------------------------------------------------
     @staticmethod
