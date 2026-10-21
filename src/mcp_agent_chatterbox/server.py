@@ -17,6 +17,7 @@ from mcp_agent_chatterbox.config import Config
 from mcp_agent_chatterbox.context import AppContext
 from mcp_agent_chatterbox.engine import ChatterboxEngine
 from mcp_agent_chatterbox.logging_setup import setup_logging
+from mcp_agent_chatterbox.speak import Speaker
 from mcp_agent_chatterbox.tool_surface import register_all
 
 logger = logging.getLogger(__name__)
@@ -50,8 +51,10 @@ Workflow:
      under ~4 GB free cannot load a model), and see which model is resident.
      Loads nothing.
   2. list_voices() -> the reference clips you can clone from, if you need one.
-  3. speak(text, model=..., voice=..., language=...) -> renders, saves a WAV
-     under the output dir and plays it.
+  3. speak(text, model=..., voice=..., language=...) -> accepts the text and
+     returns immediately. Each sentence is rendered in the background, written
+     as <message_id>_<n>.wav under the output dir and played the moment it is
+     ready, in order, until the whole reply has been spoken.
   4. tts_unload() -> hand the GPU back when another process needs it. Only one
      model stays resident at a time; asking for a different one evicts the
      previous automatically.
@@ -70,7 +73,8 @@ def build_context() -> AppContext:
     """Construct the full application object graph."""
     cfg = Config()
     setup_logging(str(cfg.logs_dir))
-    return AppContext(cfg=cfg, engine=ChatterboxEngine(cfg))
+    engine = ChatterboxEngine(cfg)
+    return AppContext(cfg=cfg, engine=engine, speaker=Speaker(cfg, engine))
 
 
 def create_server(ctx: AppContext | None = None) -> MCPServer:

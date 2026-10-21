@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 
 from mcp_agent_chatterbox.errors import tool_error
-from mcp_agent_chatterbox.playback import stop
 from mcp_agent_chatterbox.registry import VOICE_SUFFIXES, describe_models
 
 # Aliased: the MCP tool below is itself called list_voices, and an unaliased
@@ -67,13 +66,17 @@ def register(server, ctx) -> None:
     @server.tool()
     def stop_speech() -> str:
         """
-        Stop audio that is currently playing. Useful for cutting off a long
-        utterance started with wait=false.
+        Stop the current speech and clear everything still queued. Cuts the
+        sentence that is playing and cancels the remaining queued utterances,
+        so a long reply does not resume a moment after it was interrupted.
         """
         try:
-            stopped, reason = stop()
+            state = ctx.speaker.stop()
             return json.dumps(
-                {"status": "ok" if stopped else "failed", "stopped": stopped, "reason": reason},
+                {
+                    "status": "ok" if state["stopped"] or state["cancelled_jobs"] else "idle",
+                    **state,
+                },
                 indent=2,
             )
         except Exception as e:

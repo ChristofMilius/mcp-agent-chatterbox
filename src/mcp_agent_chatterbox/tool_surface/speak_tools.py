@@ -1,12 +1,12 @@
 """
 speak_tools — the main MCP call
 ===============================
-speak: render text to speech, save the WAV, optionally play it. This is the
-       one tool that loads weights, and the only one whose first call on a fresh
-       machine waits for a Hugging Face download.
+speak: accept text for speech, chunk it per sentence, and hand it to the
+       process-local queue. The call itself returns in milliseconds; a daemon
+       worker renders and plays the chunks in the background.
 
-The tool is a thin shell over speak.speak_once(), which the CLI shares. All it
-       adds is JSON framing and the error boundary.
+The tool is a thin shell over speak.Speaker.submit(), which the CLI shares. All
+       it adds is JSON framing and the error boundary.
 
 Model selection:
   * model="turbo" (default) speaks with no reference clip and understands
@@ -24,12 +24,10 @@ from __future__ import annotations
 import json
 
 from mcp_agent_chatterbox.errors import ToolFault, tool_error
-from mcp_agent_chatterbox.speak import speak_once
 
 
 def register(server, ctx) -> None:
-    cfg = ctx.cfg
-    engine = ctx.engine
+    speaker = ctx.speaker
 
     @server.tool()
     def speak(
@@ -48,25 +46,34 @@ def register(server, ctx) -> None:
         norm_loudness: bool | None = None,
         seed: int | None = None,
         play_audio: bool | None = None,
-        wait: bool = False,
-        progressive: bool | None = None,
         filename: str | None = None,
     ) -> str:
         """
-        Speak text aloud with Chatterbox on the local GPU, save it as a WAV, and
-        by default play it through the system audio device.
+        Speak text aloud with Chatterbox on the local GPU. The call returns as
+        soon as the text is accepted; synthesis and playback continue in the
+        background, one sentence chunk after another.
 
         WHEN TO CALL: whenever the user asks for a spoken reply -- "speak",
         "answer aloud", "reply by voice", "say it out loud", and the like --
-        put your ENTIRE reply into text= and call this tool. Do not reply in
-        plain text alone while the user is expecting voice; the spoken output
-        is the deliverable. text= is YOUR generated reply -- never copy the
-        user's message into it; the only exception is when they quoted exact
-        words to read aloud. Keep the text in spoken register: full
-        sentences, no markdown, no lists, no paths or code. One instruction
-        to speak stays in effect for the whole exchange until the user says
-        stop. Voice mode ON means EVERY reply is spoken, not just the
-        first.
+        put your ENTIRE reply into text= and call this tool ONCE. Do not reply
+        in plain text alone while the user is expecting voice; the spoken
+        output is the deliverable. text= is YOUR generated reply -- never copy
+        the user's message into it; the only exception is when they quoted
+        exact words to read aloud. Keep the text in spoken register: full
+        sentences, no markdown, no lists, no paths or code. One instruction to
+        speak stays in effect for the whole exchange until the user says stop.
+        Voice mode ON means EVERY reply is spoken, not just the first.
+
+        IMPORTANT -- DO NOT RETRY: the result says "queued", not "spoken". The
+        audio starts a few seconds later and plays through to the end even
+        though this call has already returned. Calling speak() again because
+        you did not hear anything yet replays the whole utterance a second
+        time. Send the complete reply in ONE call and then continue with your
+        turn; tts_status() reports queue depth if you need to check progress.
+        Leaving out the tail of a reply ("...") is the same mistake: there is
+        no length limit that requires it, the text budget is generous and long
+        text is chunked automatically.
+
         MODEL: for English, prefer model="nano" (110M, same built-in voice
         and inline tags as turbo, lighter and quicker — pass it explicitly).
         VOICE: if the user has not named a voice, ask once which voice to
@@ -119,26 +126,24 @@ def register(server, ctx) -> None:
                  Left unset, every knob keeps the model's own tuned default
                  (e.g. turbo runs cfg_weight 0.0 with top_k 1000; the 500M
                  models run cfg_weight 0.5).
-        play_audio: set false to only write the file. Defaults to the server
-                 setting (on).
-        wait: block until playback finishes instead of returning immediately.
-        progressive: for long multi-chunk text with playback on, start playing
-                 each sentence-chunk the moment it is rendered instead of
-                 waiting for the whole utterance to generate first. Defaults
-                 to the server setting (off). Ignored otherwise — single
-                 utterances and playback-off calls behave exactly as before.
-        filename: output basename; a safe name is generated when omitted.
+        play_audio: set false to only write the chunk files. Defaults to the
+                 server setting (on).
+        filename: base name for the chunk files; they are written as
+                 <filename>_1.wav, <filename>_2.wav, ... A timestamped message
+                 id is used when omitted.
 
-        The first call downloads the model from Hugging Face (hundreds of MB to
-        a few GB) and can take a while; later calls reuse the cached weights.
-        Returns JSON with the output filename, duration, sample rate, model,
-        device and whether it played.
+        Each sentence is one chunk: it is rendered, saved and played, then the
+        next one follows, so the reply starts within a few seconds and plays
+        continuously. Files land in the output directory and replay in filename
+        order. Returns JSON with the message id, the planned chunk filenames
+        and the queue position -- not durations, which are only known once the
+        background rendering is done (see tts_status). The first call downloads
+        the model from Hugging Face (hundreds of MB to a few GB) and can take a
+        while; later calls reuse the cached weights.
         """
         try:
-            payload = speak_once(
+            payload = speaker.submit(
                 text,
-                cfg=cfg,
-                engine=engine,
                 model=model,
                 voice=voice,
                 reference_clip=reference_clip,
@@ -153,8 +158,6 @@ def register(server, ctx) -> None:
                 norm_loudness=norm_loudness,
                 seed=seed,
                 play_audio=play_audio,
-                wait=wait,
-                progressive=progressive,
                 filename=filename,
             )
             return json.dumps(payload, indent=2, ensure_ascii=False)

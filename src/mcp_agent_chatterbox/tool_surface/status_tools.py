@@ -31,7 +31,9 @@ def register(server, ctx) -> None:
         Report Chatterbox TTS readiness: installed packages, resolved device,
         per-GPU free/total VRAM, the resident model, the models available, the
         languages the multilingual model speaks, the configured default voice
-        (CHATTERBOX_VOICE), and the paralinguistic tags turbo understands.
+        (CHATTERBOX_VOICE), the paralinguistic tags turbo understands, and the
+        speech queue (how many utterances are queued or rendering, plus the
+        result of the last one — useful when audio unexpectedly does not start).
         Loads no weights — safe as a preflight before a speak call. On a
         machine where a large model already occupies a GPU, check free_mb here
         first: a card with less than ~4096 MB free will fail to load.
@@ -43,6 +45,7 @@ def register(server, ctx) -> None:
                 "gpus": engine.gpu_report(),
                 "models": describe_models(),
                 "default_voice": cfg.voice or None,
+                "speech": ctx.speaker.status(),
                 "multilingual_languages": SUPPORTED_LANGUAGES,
                 "multilingual_t3_models": sorted(T3_MODELS),
                 "turbo_paralinguistic_tags": list(TURBO_TAGS),

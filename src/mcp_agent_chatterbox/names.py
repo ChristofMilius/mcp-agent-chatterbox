@@ -6,18 +6,14 @@ control characters and CRLF sequences. Everything here funnels such a string
 into a single flat, filesystem-safe filename component. No part of the
 generated text ever reaches a path unfiltered.
 
-The filename is `<timestamp>-<slug>-<digest>.wav`:
-  timestamp  so successive takes sort chronologically in Explorer,
-  slug        so a human can recognise the take at a glance,
-  digest      sha256 of (text, model) so two different utterances that slug to
-              the same word cannot overwrite each other.
+The speaker names its output `<message_id>_<n>.wav`, where the message id is a
+millisecond timestamp or — when the caller passes filename= — the slug of that
+name. slugify() is the only transformation that touches model-supplied text.
 """
 
 from __future__ import annotations
 
-import hashlib
 import re
-from datetime import datetime
 
 #: Anything that is not a word character, a space, or a hyphen collapses to a
 #: separator. This also removes / \\ : * ? " < > | and every control character,
@@ -53,16 +49,4 @@ def slugify(text: str, max_len: int = _MAX_SLUG) -> str:
     return cleaned or "speech"
 
 
-def digest(text: str, model: str) -> str:
-    """Short content hash tying a filename to the utterance that produced it."""
-    payload = f"{model}\x00{text}".encode("utf-8", errors="replace")
-    return hashlib.sha256(payload).hexdigest()[:8]
-
-
-def speech_filename(text: str, model: str, when: datetime | None = None) -> str:
-    """Build the output filename for one synthesis."""
-    stamp = (when or datetime.now()).strftime("%Y%m%d-%H%M%S")
-    return f"{stamp}-{slugify(text)}-{digest(text, model)}.wav"
-
-
-__all__ = ["digest", "slugify", "speech_filename"]
+__all__ = ["slugify"]

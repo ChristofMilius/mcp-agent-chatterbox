@@ -23,7 +23,6 @@ _CONFIG_ENV = [
     "CHATTERBOX_VRAM_MB",
 "CHATTERBOX_STRICT_VRAM",
     "CHATTERBOX_AUTOPLAY",
-    "CHATTERBOX_PROGRESSIVE",
     "CHATTERBOX_HF_HOME",
     "CHATTERBOX_MAX_CHARS",
     "CHATTERBOX_MAX_CHUNK_CHARS",
@@ -125,12 +124,12 @@ class FakeEngine:
         self.wav = torch.zeros(1, samples)
         self.sample_rate = sample_rate
 
-    def synthesize(self, text, model, **kwargs):
-        self.calls.append({"text": text, "model": model, **kwargs})
+    def synthesize(self, text, model_key, **kwargs):
+        self.calls.append({"text": text, "model": model_key, **kwargs})
         return {
             "wav": self.wav,
             "sample_rate": self.sample_rate,
-            "model": model,
+            "model": model_key,
             "device": "cpu",
             "chars": len(text),
             "elapsed_s": 0.01,

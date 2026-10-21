@@ -15,12 +15,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from mcp_agent_chatterbox.config import Config
     from mcp_agent_chatterbox.engine import ChatterboxEngine
+    from mcp_agent_chatterbox.speak import Speaker
 
 
 @dataclass(frozen=True)
 class AppContext:
     cfg: Config
     engine: ChatterboxEngine
+    speaker: Speaker
 
 
 __all__ = ["AppContext"]

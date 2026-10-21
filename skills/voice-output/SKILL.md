@@ -129,24 +129,28 @@ Useful variations:
 ```json
 { "text": "Der Build ist fertig.", "model": "multilingual", "language": "de" }
 { "text": "All tests pass.", "voice": "<a name from list_voices()>" }
-{ "text": "Long reply...", "wait": true }
 { "text": "Another line.", "play_audio": false }
+{ "text": "Nightly report.", "filename": "nightly" }
 ```
 
 - **German / other languages:** `model="multilingual"` + `language="de"` and
   a `voice=` from `list_voices()` (multilingual requires a reference clip;
   the stock turbo/nano voices are English-only).
-- **Cut off playback:** `stop_speech()`.
-- **Long replies:** the server auto-splits text at sentence boundaries and
-  stitches the chunks; pass `wait: true` if the next tool call must not
-  overlap the audio, or `progressive: true` to start playing each chunk as it
-  renders instead of waiting for the whole utterance.
+- **Cut off playback:** `stop_speech()` — it cuts the current sentence and
+  drops anything still queued.
+- **Long replies:** `speak()` returns as soon as the text is accepted and the
+  server speaks it one sentence at a time in the background, writing
+  `<message_id>_<n>.wav` files. Put the whole reply in one call; do not retry
+  or truncate with "..." because the audio has not started yet. There is no
+  `wait`/`progressive` flag to set — the queue always behaves this way.
 
 ## Preflight and failure handling
 
 - First-ever `speak()` on a machine downloads weights from Hugging Face and
-  can take minutes; later calls are fast. If a call times out, the download
-  is likely still running — retry once before reporting failure.
+  can take minutes; later calls are fast. The call itself returns immediately,
+  so the download shows up as silence before the first chunk — do not re-call
+  `speak()` because of it. `tts_status()` -> `speech.pending` tells you whether
+  the worker is still busy.
 - If `speak()` returns `cuda_out_of_memory`, report it in one line and
   suggest `tts_unload()` — do not retry in a loop.
 - If `reference_clip_required`, the chosen model needs a voice: for an

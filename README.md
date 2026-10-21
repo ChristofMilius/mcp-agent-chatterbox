@@ -34,8 +34,9 @@ without a reference clip, so the tool checks this up front and returns a
   is slow.
 - ~6 GB of free VRAM for a comfortable margin (turbo needs ~2-3 GB, the 500M
   models ~3-4 GB)
-- Windows for audio playback. On other platforms the WAV is still written; the
-  `played` field comes back `false` with a reason.
+- Windows for audio playback. On other platforms the chunk files are still
+  written; the `play` field comes back `false` and `tts_status` records the
+  playback error in `speech.last.errors`.
 
 ## Installation
 
@@ -289,12 +290,10 @@ Add to `~/.config/opencode/opencode.jsonc`:
         "CHATTERBOX_STRICT_VRAM": "0",
 
         // ----- playback and output -----
-        // Play the audio after writing it (1/0/true/false; default on).
+        // Play each sentence chunk after writing it (1/0/true/false;
+        // default on). Rendering and playback run in the background, so a
+        // speak call returns immediately.
         "CHATTERBOX_AUTOPLAY": "1",
-
-        // With playback on, play each long-text chunk the moment it
-        // renders instead of waiting for the whole utterance.
-        "CHATTERBOX_PROGRESSIVE": "0",
 
         // WAVs and logs. Relative paths resolve against the project root,
         // never the process CWD.
@@ -305,9 +304,9 @@ Add to `~/.config/opencode/opencode.jsonc`:
         // Reject single requests longer than this (chars)...
         "CHATTERBOX_MAX_CHARS": "4000",
 
-        // ...and split anything over this (chars) into sentence-aligned
-        // chunks, stitched into one file with this much silence between
-        // them.
+        // ...and hard-cap any single sentence at this many chars. Text is
+        // normally split one sentence per chunk, so this only bites on a
+        // pathological run-on sentence.
         "CHATTERBOX_MAX_CHUNK_CHARS": "500",
         "CHATTERBOX_CHUNK_PAUSE_MS": "250"
       },
@@ -370,7 +369,6 @@ environment work in their own config format — strict JSON (no comments),
         "CHATTERBOX_VRAM_MB": "4096",
         "CHATTERBOX_STRICT_VRAM": "0",
         "CHATTERBOX_AUTOPLAY": "1",
-        "CHATTERBOX_PROGRESSIVE": "0",
         "CHATTERBOX_OUTPUT_DIR": "tts_output",
         "CHATTERBOX_LOGS_DIR": "logs",
         "CHATTERBOX_MAX_CHARS": "4000",
@@ -430,7 +428,9 @@ Speaking stays an explicit choice, by tool call or by `/speak`.
 
 ### `speak`
 
-The main call. Renders text, writes a WAV to the output dir, plays it.
+The main call. Accepts text and returns immediately; a background worker renders
+it one sentence at a time, writes `<message_id>_<n>.wav` files and plays each as
+it lands.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -448,10 +448,8 @@ The main call. Renders text, writes a WAV to the output dir, plays it.
 | `repetition_penalty` | per model | Penalise repeated tokens (1.0–2.0) |
 | `norm_loudness` | per model | Normalize to −27 LUFS. Turbo only — the 500M models have no such parameter |
 | `seed` | random | Reseed torch for a reproducible re-render within the resident session; `0` means random. Not guaranteed byte-identical across a restart |
-| `play_audio` | server setting | `false` writes the file only |
-| `wait` | `false` | Block until playback finishes |
-| `progressive` | server setting | With playback on, play each long-text chunk the moment it renders instead of waiting for the whole utterance |
-| `filename` | generated | Output basename |
+| `play_audio` | server setting | `false` writes the chunk files only |
+| `filename` | generated | Base name for the chunk files; they are written as `<filename>_1.wav`, `<filename>_2.wav`, ... A millisecond-timestamped message id is used when omitted |
 
 Style parameters left unset keep each model's own tuned values rather than a
 single global default — turbo is tuned for latency at `cfg_weight=0.0`, the
@@ -460,18 +458,19 @@ audibly degrades two of them. A knob a model does not support (turbo ignores
 `exaggeration`/`cfg_weight`; the 500M models take no `top_k`/`norm_loudness`)
 is dropped with a warning rather than crashing.
 
-Text longer than `CHATTERBOX_MAX_CHUNK_CHARS` is spoken as one file but
-rendered in sentence-aligned chunks: Chatterbox's own `generate()` truncates
+Text is split **one sentence per chunk**: Chatterbox's own `generate()` truncates
 long inputs (turbo degrades past roughly 600 characters and comes back shorter
-than a shorter prompt), so a single oversized render would be garbled. The
-chunks share the same voice, style knobs and reference clip, and are stitched
-together with `CHATTERBOX_CHUNK_PAUSE_MS` of silence between them. With
-`progressive` (or `CHATTERBOX_PROGRESSIVE=1`) and playback enabled, chunk 1
-starts playing the moment it is rendered while the later chunks are still being
-generated — the first audio lands in about the time of one chunk instead of the
-whole utterance. Each chunk is staged to its own `*.progressive-N.wav` in the
-output dir during playback and removed afterwards; the stitched final file is
-still written as usual.
+than a shorter prompt), so a single oversized render would be garbled. A chunk
+longer than `CHATTERBOX_MAX_CHUNK_CHARS` is split further on word boundaries.
+The chunks share the same voice, style knobs and reference clip, and are played
+with `CHATTERBOX_CHUNK_PAUSE_MS` of silence between them.
+
+The call returns as soon as the text is accepted — it reports the message id,
+the planned chunk filenames and the queue position, not durations. A daemon
+worker then renders and plays the chunks in order, so the first sentence is
+audible within seconds and the rest follow continuously. Files stay on disk and
+replay in filename order; there is no stitched final file. `stop_speech` cuts
+the current sentence and cancels everything still queued.
 
 ```jsonc
 // a quick aside in the stock voice
@@ -530,7 +529,7 @@ it to `requires_reference_clip`.
 
 ### `stop_speech`
 
-Cuts off playback started with `wait=false`.
+Cuts off the sentence that is playing and cancels every utterance still queued.
 
 ## Voice cloning
 
@@ -606,15 +605,15 @@ uv run mcp-agent-chatterbox doctor
 # synthesize without going through MCP
 uv run mcp-agent-chatterbox speak "Build finished." --model turbo
 uv run mcp-agent-chatterbox speak "Guten Morgen." --model multilingual --voice <your-clip-name> --language de
-uv run mcp-agent-chatterbox speak "..." --no-play --wait
+uv run mcp-agent-chatterbox speak "..." --no-play
 
 # run the server directly
 uv run mcp-agent-chatterbox serve
 ```
 
 The CLI `speak` subcommand shares its code path with the MCP tool
-(`mcp_agent_chatterbox.speak.speak_once`), so it is the fastest way to check a
-fresh install.
+(`mcp_agent_chatterbox.speak.Speaker`) and blocks until the queue is drained, so
+it is the fastest way to check a fresh install.
 
 ## Web surface (HTTP transport)
 
@@ -682,11 +681,10 @@ All settings are environment variables, read at startup. No secrets.
 | `CHATTERBOX_OUTPUT_DIR` | `tts_output` | Where WAVs are written |
 | `CHATTERBOX_VOICES_DIR` | `voices` | Where reference clips live |
 | `CHATTERBOX_LOGS_DIR` | `logs` | Rotating log file location |
-| `CHATTERBOX_AUTOPLAY` | `1` | Play audio after writing |
-| `CHATTERBOX_PROGRESSIVE` | `0` | With playback on, play each long-text chunk the moment it renders instead of waiting for the whole utterance |
+| `CHATTERBOX_AUTOPLAY` | `1` | Play each chunk as it renders |
 | `CHATTERBOX_MAX_CHARS` | `4000` | Reject longer single requests |
-| `CHATTERBOX_MAX_CHUNK_CHARS` | `500` | Long text auto-splits into sentence-aligned chunks of up to this many chars |
-| `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence inserted between concatenated chunks |
+| `CHATTERBOX_MAX_CHUNK_CHARS` | `500` | Hard cap for one sentence; longer sentences are split on word boundaries |
+| `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence between played chunks |
 | `CHATTERBOX_VRAM_MB` | `4096` | Free-VRAM floor for a load attempt |
 | `CHATTERBOX_STRICT_VRAM` | `0` | `1` refuses a load below the floor instead of warning |
 | `CHATTERBOX_HF_HOME` | unset | Where the Hugging Face cache lives. Does not compete with `HF_HOME` — it **sets** it, at load time, before `huggingface_hub` seals the value on import. Use it in the MCP server's registration so the cache root cannot be lost to a harness that does not forward your environment. See [Model weights](#model-weights) |
@@ -767,9 +765,11 @@ registration for `CHATTERBOX_HF_HOME` and look for a second copy under
 [Model weights](#model-weights) for why `HF_HOME` in your shell is not always
 enough.
 
-**Audio does not come out.** Check `played` and `playback_note` in the
-response. Playback needs Windows; on other platforms the WAV is still written.
-`stop_speech` clears anything queued.
+**Audio does not come out.** Check `tts_status` -> `speech`: `pending` above
+zero means the queue is still working, and `last` carries `written`,
+`played_chunks` and `errors` for the most recent utterance. Playback needs
+Windows; on other platforms the chunk files are still written. `stop_speech`
+clears anything queued.
 
 **`turbo` and the watermarker.** Turbo's output carries Resemble AI's
 watermarking mark, added by the vendored Perth library. Turning it off would be

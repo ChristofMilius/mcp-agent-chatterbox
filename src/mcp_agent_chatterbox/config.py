@@ -128,23 +128,18 @@ class Config:
         self.strict_vram: bool = _env_bool("CHATTERBOX_STRICT_VRAM", False)
         self.autoplay: bool = _env_bool("CHATTERBOX_AUTOPLAY", True)
 
-        #: When text is long enough to need chunking and playback is on, start
-        #: playing each chunk the moment it is rendered instead of waiting for
-        #: the whole utterance to synthesise first.
-        self.progressive: bool = _env_bool("CHATTERBOX_PROGRESSIVE", False)
-
         #: Reject text longer than this instead of attempting a synthesis that
         #: will take minutes and blow the context window of whoever is waiting.
         self.max_chars: int = _env_int("CHATTERBOX_MAX_CHARS", 4000)
 
-        #: Longest text a single generate() call is asked to render. Chatterbox
-        #: truncates large inputs (turbo degrades past roughly 600 chars and
-        #: comes back shorter than a shorter prompt), so text longer than this
-        #: is sentence-split into per-chunk renders and concatenated into one
-        #: WAV.
+        #: Hard cap on any single generate() call. The speaker splits text into
+        #: one sentence per chunk; this only bounds the exception, a sentence so
+        #: long it must be broken. Chatterbox truncates large inputs (turbo
+        #: degrades past roughly 600 chars and comes back shorter than a shorter
+        #: prompt), so a chunk never exceeds this.
         self.max_chunk_chars: int = _env_int("CHATTERBOX_MAX_CHUNK_CHARS", 500)
 
-        #: Silence in ms inserted between concatenated chunks, so sentence
+        #: Silence in ms inserted between consecutive chunks, so sentence
         #: boundaries do not run directly into one another.
         self.chunk_pause_ms: int = _env_int("CHATTERBOX_CHUNK_PAUSE_MS", 250)
 
@@ -162,7 +157,6 @@ class Config:
             f"vram_floor_mb={self.vram_floor_mb!r}, "
             f"strict_vram={self.strict_vram!r}, "
             f"autoplay={self.autoplay!r}, "
-            f"progressive={self.progressive!r}, "
             f"max_chars={self.max_chars!r}, "
             f"max_chunk_chars={self.max_chunk_chars!r}, "
             f"chunk_pause_ms={self.chunk_pause_ms!r}, "

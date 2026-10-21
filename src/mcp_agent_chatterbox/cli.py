@@ -108,16 +108,15 @@ def _cmd_speak(args) -> int:
     from mcp_agent_chatterbox.engine import ChatterboxEngine
     from mcp_agent_chatterbox.errors import ToolFault
     from mcp_agent_chatterbox.logging_setup import setup_logging
-    from mcp_agent_chatterbox.speak import speak_once
+    from mcp_agent_chatterbox.speak import Speaker
 
     cfg = Config()
     setup_logging(str(cfg.logs_dir))
 
+    speaker = Speaker(cfg, ChatterboxEngine(cfg))
     try:
-        result = speak_once(
+        payload = speaker.submit(
             args.text,
-            cfg=cfg,
-            engine=ChatterboxEngine(cfg),
             model=args.model,
             voice=args.voice,
             reference_clip=args.reference_clip,
@@ -132,8 +131,6 @@ def _cmd_speak(args) -> int:
             norm_loudness=False if args.no_norm_loudness else None,
             seed=args.seed,
             play_audio=not args.no_play,
-            wait=args.wait,
-            progressive=args.progressive or None,
         )
     except ToolFault as fault:
         print(f"Failed  : {fault.reason} - {fault.message}", file=sys.stderr)
@@ -142,8 +139,8 @@ def _cmd_speak(args) -> int:
         print(f"Failed  : {type(e).__name__} (see {cfg.logs_dir})", file=sys.stderr)
         return 1
 
-    print(f"Wrote   : {result['path']}")
-    print(f"Model   : {result['model']} on {result['device']}")
+    print(f"Message : {payload['message_id']}")
+    print(f"Chunks  : {payload['chunks']} sentence(s), {payload['text_chars']} chars")
     knobs = {
         k: v
         for k, v in {
@@ -160,14 +157,22 @@ def _cmd_speak(args) -> int:
     }
     if knobs:
         print("Knobs   : " + ", ".join(f"{k}={v}" for k, v in knobs.items()))
-    print(
-        f"Duration: {result['duration_s']}s @ {result['sample_rate']} Hz "
-        f"(synthesis {result['synthesis_s']}s)"
-    )
-    if result.get("played"):
-        print("Played  : yes")
-    elif result.get("playback_note"):
-        print(f"Played  : no ({result['playback_note']})")
+
+    # The CLI is the operator console, so unlike the MCP tool it blocks: the
+    # shell should not return while the worker is still rendering.
+    speaker.wait()
+    last = speaker.status()["last"] or {}
+    for name in last.get("written", []):
+        print(f"Wrote   : {cfg.output_dir / name}")
+    if last:
+        print(f"Model   : {payload['model']} on {last.get('device') or 'unknown'}")
+        print(
+            f"Duration: {last.get('duration_s')}s "
+            f"(synthesis {last.get('synthesis_s')}s)"
+        )
+    print(f"Played  : {last.get('played_chunks', 0)} chunk(s)")
+    for error in last.get("errors", []):
+        print(f"Warning : {error}", file=sys.stderr)
     return 0
 
 
@@ -227,11 +232,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_speak.add_argument(
         "--seed", type=int, default=None, help="Seed torch (reproducible re-render within a session)."
     )
-    p_speak.add_argument("--no-play", action="store_true", help="Only write the WAV.")
-    p_speak.add_argument("--wait", action="store_true", help="Block until playback finishes.")
-    p_speak.add_argument(
-        "--progressive", action="store_true", help="Play chunks as they render (long text)."
-    )
+    p_speak.add_argument("--no-play", action="store_true", help="Only write the WAV files.")
     p_speak.set_defaults(func=_cmd_speak)
 
     return parser
