@@ -153,26 +153,59 @@ def _hard_split(sentence: str, max_chunk: int) -> list[str]:
     return [p for p in parts if p]
 
 
-def split_sentences(text: str, max_chunk: int) -> list[str]:
+def split_sentences(text: str, max_chunk: int, sentences_per_chunk: int = 1) -> list[str]:
     """
-    Split `text` into one chunk per sentence.
+    Split `text` into chunks of whole sentences.
 
     A sentence breaks at '.', '!', '?' or ';' (plus any immediately following
-    closing quotes) or at a newline. Only a sentence longer than `max_chunk` is
-    split further, because a single generate() call truncates past roughly that
-    size. The result is never empty for non-blank input.
+    closing quotes) or at a newline. `sentences_per_chunk` consecutive sentences
+    are batched into one chunk when they fit, because every chunk is a separate
+    generate() call and each boundary costs a pause plus a fresh prosody start —
+    batching keeps short sentences from sounding staccato. The batch is capped by
+    `max_chunk` characters as well as by the sentence count, since a single
+    generate() call truncates past roughly that size.
+
+    The FIRST sentence always goes out alone, so audio starts as soon as one
+    sentence is rendered rather than after a whole batch. Only a chunk that is
+    still longer than `max_chunk` is split further, on word boundaries. The
+    result is never empty for non-blank input.
     """
     body = (text or "").strip()
     if not body:
         return []
-    chunks: list[str] = []
+    units: list[str] = []
     start = 0
     for end in _sentence_ends(body):
         unit = body[start:end].strip()
         start = end
         if unit:
-            chunks.extend(_hard_split(unit, max_chunk))
+            units.append(unit)
+    if not units:
+        return []
+    groups = [[units[0]], *_group_sentences(units[1:], max_chunk, sentences_per_chunk)]
+    chunks: list[str] = []
+    for group in groups:
+        chunks.extend(_hard_split(" ".join(group), max_chunk))
     return chunks
+
+
+def _group_sentences(units: list[str], max_chunk: int, per_chunk: int) -> list[list[str]]:
+    """Batch consecutive sentences, respecting both the count and the char cap."""
+    if per_chunk <= 1:
+        return [[unit] for unit in units]
+    groups: list[list[str]] = []
+    current: list[str] = []
+    length = 0
+    for unit in units:
+        added = len(unit) + (1 if current else 0)
+        if current and (len(current) >= per_chunk or length + added > max_chunk):
+            groups.append(current)
+            current, length, added = [], 0, len(unit)
+        current.append(unit)
+        length += added
+    if current:
+        groups.append(current)
+    return groups
 
 
 def _validate_language(language: str | None) -> str | None:
@@ -421,7 +454,7 @@ class Speaker:
                 requires=["voice", "reference_clip"],
             )
 
-        chunks = split_sentences(body, cfg.max_chunk_chars)
+        chunks = split_sentences(body, cfg.max_chunk_chars, cfg.sentences_per_chunk)
         message_id = slugify(Path(filename).stem) if filename else self._next_id()
 
         job = _Job(

@@ -12,6 +12,7 @@ tool stopped synthesizing in-process.
 from __future__ import annotations
 
 import json
+import socket
 import threading
 
 import pytest
@@ -82,6 +83,21 @@ class ScriptedWorker:
                 "cancelled_active": False,
             }, False
         return {"ok": False, "reason": "unknown_op", "message": op}, False
+
+
+@pytest.fixture(autouse=True)
+def _isolated_port(cfg):
+    """
+    Point every test at its own free loopback port.
+
+    The default port is where a developer's *resident* worker lives, and the
+    whole point of this design is that one stays running -- so a test that bound
+    or probed the default would talk to that worker instead of its own fake, and
+    "no worker running" would flake depending on the developer's machine.
+    """
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        cfg.worker_port = sock.getsockname()[1]
 
 
 @pytest.fixture

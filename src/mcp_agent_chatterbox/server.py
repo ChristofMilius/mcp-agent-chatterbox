@@ -59,7 +59,8 @@ Workflow:
      Loads nothing.
   3. list_voices() -> the reference clips you can clone from, if you need one.
   4. speak(text, model=..., voice=..., language=...) -> hands the text to the
-     worker, which renders one sentence at a time and plays it as soon as it is
+     worker, which renders chunk by chunk (up to CHATTERBOX_SENTENCES_PER_CHUNK
+     sentences each) and plays it as soon as it is
      written. The call returns when the whole reply has been spoken.
   5. tts_unload() -> hand the GPU back when another process needs it. Only one
      model stays resident at a time; asking for a different one evicts the

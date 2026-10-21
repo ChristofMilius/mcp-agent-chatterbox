@@ -290,6 +290,9 @@ class TestOutput:
         assert speaker.wait(timeout=10)
 
     def test_writes_one_file_per_sentence(self, cfg, fake_engine):
+        # One file per SENTENCE is the sentences_per_chunk=1 mode; batching is
+        # covered in TestChunking.
+        cfg.sentences_per_chunk = 1
         payload, last = run(cfg, fake_engine, "Alpha. Beta. Gamma.")
         assert payload["chunks"] == 3
         assert payload["files"] == [
@@ -367,6 +370,7 @@ class TestPlayback:
         assert last["played_chunks"] == 1
 
     def test_one_play_call_per_chunk_in_order(self, cfg, fake_engine, monkeypatch):
+        cfg.sentences_per_chunk = 1
         calls = []
         monkeypatch.setattr("mcp_agent_chatterbox.speak.player_available", lambda: True)
         monkeypatch.setattr(
@@ -530,6 +534,7 @@ class TestQueue:
             "mcp_agent_chatterbox.speak.play", lambda *a, **k: (True, None)
         )
         cfg.chunk_pause_ms = 250
+        cfg.sentences_per_chunk = 1
         run(cfg, fake_engine, "Alpha. Beta. Gamma.", play_audio=True)
         # A pause after every chunk except the last.
         assert clock.sleeps == [0.25, 0.25]
@@ -580,6 +585,7 @@ class TestSamplingKnobs:
         assert call["seed"] is None
 
     def test_chunks_share_the_sampling_knobs(self, cfg, fake_engine):
+        cfg.sentences_per_chunk = 1
         run(cfg, fake_engine, "Alpha. " * 6, top_p=0.9, top_k=500, seed=7)
         assert len(fake_engine.calls) == 6
         for call in fake_engine.calls:
@@ -663,12 +669,59 @@ class TestSentenceSplitting:
         assert all(len(s) <= 40 for s in chunks)
         assert " ".join(chunks).split() == text.split()
 
+    def test_batching_keeps_the_first_sentence_alone(self):
+        # Speech has to start as soon as one sentence is rendered, so a batch
+        # never swallows the opening sentence.
+        chunks = split_sentences("One. Two. Three. Four.", 500, 3)
+        assert chunks == ["One.", "Two. Three. Four."]
+
+    def test_batching_respects_the_sentence_count(self):
+        chunks = split_sentences("One. Two. Three. Four. Five.", 500, 2)
+        assert chunks == ["One.", "Two. Three.", "Four. Five."]
+
+    def test_batching_breaks_early_at_the_character_cap(self):
+        # Two sentences fit, the third does not: the batch stops at two rather
+        # than overflowing the cap.
+        chunks = split_sentences("aaaaaa. bbbbbb. cccccc.", 14, 3)
+        assert chunks == ["aaaaaa.", "bbbbbb.", "cccccc."]
+
+    def test_batching_of_one_is_the_old_behaviour(self):
+        chunks = split_sentences("One. Two. Three.", 500, 1)
+        assert chunks == ["One.", "Two.", "Three."]
+
+    def test_a_long_sentence_is_not_rejoined_by_batching(self):
+        # hard_split pieces must each stand alone; merging them back would
+        # exceed the cap that made them split in the first place.
+        text = "First. " + "word " * 20 + ". Last."
+        chunks = split_sentences(text, 30, 3)
+        assert chunks[0] == "First."
+        assert all(len(s) <= 30 for s in chunks)
+        assert " ".join(chunks).split() == text.split()
+
 
 class TestChunking:
-    def test_short_text_is_still_one_chunk_per_sentence(self, cfg, fake_engine):
+    def test_short_text_is_still_one_chunk_per_sentence_in_single_mode(self, cfg, fake_engine):
+        cfg.sentences_per_chunk = 1
         payload, _ = run(cfg, fake_engine, "Alpha. Beta. Gamma.")
         assert payload["chunks"] == 3
         assert [c["text"] for c in fake_engine.calls] == ["Alpha.", "Beta.", "Gamma."]
+
+    def test_short_sentences_are_batched_by_default(self, cfg, fake_engine):
+        # Each chunk is one generate() call, so batching short sentences removes
+        # the boundary pauses that made the delivery sound staccato.
+        payload, _ = run(cfg, fake_engine, "Alpha. Beta. Gamma. Delta.")
+        # First sentence alone (fast start), then the rest in one batch of 3.
+        assert payload["chunks"] == 2
+        assert [c["text"] for c in fake_engine.calls] == ["Alpha.", "Beta. Gamma. Delta."]
+
+    def test_batch_never_exceeds_the_character_cap(self, cfg, fake_engine):
+        # The count is a wish, the char cap is a hard limit: Chatterbox truncates
+        # a long input, so a batch must break early rather than overflow.
+        cfg.sentences_per_chunk = 3
+        cfg.max_chunk_chars = 30
+        payload, _ = run(cfg, fake_engine, "One two three. Four five six. Seven eight nine.")
+        assert payload["chunks"] >= 3
+        assert all(len(call["text"]) <= 30 for call in fake_engine.calls)
 
     def test_over_long_sentence_is_capped(self, cfg, fake_engine):
         cfg.max_chunk_chars = 40

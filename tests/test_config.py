@@ -30,6 +30,7 @@ class TestDefaults:
         assert c.autoplay is True
         assert c.max_chars == 4000
         assert c.max_chunk_chars == 500
+        assert c.sentences_per_chunk == 3
         assert c.chunk_pause_ms == 250
         assert c.drain_timeout_s == 300
         assert c.worker_port == DEFAULT_WORKER_PORT
@@ -121,10 +122,16 @@ class TestIntegers:
 
     def test_chunk_settings_blank_fall_back(self, monkeypatch):
         monkeypatch.setenv("CHATTERBOX_MAX_CHUNK_CHARS", "")
+        monkeypatch.setenv("CHATTERBOX_SENTENCES_PER_CHUNK", "")
         monkeypatch.setenv("CHATTERBOX_CHUNK_PAUSE_MS", "")
         c = Config()
         assert c.max_chunk_chars == 500
+        assert c.sentences_per_chunk == 3
         assert c.chunk_pause_ms == 250
+
+    def test_sentences_per_chunk_parses(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_SENTENCES_PER_CHUNK", "1")
+        assert Config().sentences_per_chunk == 1
 
     def test_drain_timeout_parses(self, monkeypatch):
         monkeypatch.setenv("CHATTERBOX_DRAIN_TIMEOUT", "45")

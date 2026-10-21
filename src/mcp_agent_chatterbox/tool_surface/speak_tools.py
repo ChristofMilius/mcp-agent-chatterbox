@@ -192,14 +192,16 @@ def register(server, ctx) -> None:
                  <filename>_1.wav, <filename>_2.wav, ... A timestamped message
                  id is used when omitted.
 
-        Each sentence is one chunk: it is rendered, saved and played, then the
-        next one follows, so the reply plays continuously from the first
-        sentence. Files land in the output directory and replay in filename
-        order. Returns JSON with the message id, the chunk files that were
-        written and played, and the measured synthesis time. The first call in a
-        fresh worker downloads the model from Hugging Face (hundreds of MB to a
-        few GB) and can take a while; a resident worker keeps the weights loaded,
-        so later calls pay nothing for it.
+        Text is cut into chunks of whole sentences (up to three by default, see
+        CHATTERBOX_SENTENCES_PER_CHUNK, always capped by CHATTERBOX_MAX_CHUNK_CHARS
+        characters): each chunk is rendered, saved and played, then the next one
+        follows, so the reply plays continuously from the first sentence. Files
+        land in the output directory and replay in filename order. Returns JSON
+        with the message id, the chunk files that were written and played, and the
+        measured synthesis time. The first call in a fresh worker downloads the
+        model from Hugging Face (hundreds of MB to a few GB) and can take a while;
+        a resident worker keeps the weights loaded, so later calls pay nothing for
+        it.
         """
         try:
             response = send_request(
@@ -234,8 +236,8 @@ def register(server, ctx) -> None:
                     "reason": "worker_not_running",
                     "message": (
                         f"The synthesis worker is not reachable ({exc}). Start it with "
-                        "`mcp-agent-chatterbox worker`, or leave it resident via your "
-                        "harness startup. The server does not synthesize on its own."
+                        "`mcp-agent-chatterbox worker` and leave it running; the server "
+                        "does not synthesize on its own."
                     ),
                 },
                 indent=2,

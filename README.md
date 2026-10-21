@@ -426,7 +426,7 @@ Speaking stays an explicit choice, by tool call or by `/speak`.
 ### `speak`
 
 The main call. Accepts text, hands it to the resident worker, and returns once
-the whole reply has been spoken. The worker renders it one sentence at a time,
+the whole reply has been spoken. The worker renders it chunk by chunk,
 writes `<message_id>_<n>.wav` files and plays each as it lands.
 
 If no worker is running it returns `worker_not_running` with the command to
@@ -458,12 +458,18 @@ audibly degrades two of them. A knob a model does not support (turbo ignores
 `exaggeration`/`cfg_weight`; the 500M models take no `top_k`/`norm_loudness`)
 is dropped with a warning rather than crashing.
 
-Text is split **one sentence per chunk**: Chatterbox's own `generate()` truncates
+Text is split into chunks of **whole sentences** — `CHATTERBOX_SENTENCES_PER_CHUNK`
+of them per chunk (3 by default), because Chatterbox's own `generate()` truncates
 long inputs (turbo degrades past roughly 600 characters and comes back shorter
-than a shorter prompt), so a single oversized render would be garbled. A chunk
-longer than `CHATTERBOX_MAX_CHUNK_CHARS` is split further on word boundaries.
-The chunks share the same voice, style knobs and reference clip, and are played
-with `CHATTERBOX_CHUNK_PAUSE_MS` of silence between them.
+than a shorter prompt), so a single oversized render would be garbled. Every chunk
+is a separate `generate()` call, and each boundary costs a pause plus a fresh
+prosody start, which is why short sentences are batched rather than spoken one at
+a time — with one sentence per chunk a quick, clipped reply sounds staccato. The
+first sentence always stays alone so audio starts as soon as it is rendered, and a
+batch never exceeds `CHATTERBOX_MAX_CHUNK_CHARS` characters; a single sentence
+longer than that is split further on word boundaries. The chunks share the same
+voice, style knobs and reference clip, and are played with
+`CHATTERBOX_CHUNK_PAUSE_MS` of silence between them.
 
 The call returns when the reply has been spoken — it reports the message id, the
 chunk files that were written and played, and the measured synthesis and audio
@@ -626,10 +632,42 @@ uv run mcp-agent-chatterbox speak "..." --no-play
 uv run mcp-agent-chatterbox serve
 ```
 
+The console script is only on `PATH` inside the project (or via `uv run`). To call
+it from anywhere, add a one-line shim — see
+[The `cbc` shim](#the-cbc-shim-to-run-it-from-anywhere).
+
 `worker` runs the resident process in the foreground; it loads the model on the
 first utterance and keeps it loaded. `speak` shares the same code path and blocks
 until the queue is drained, so it is the fastest way to check a fresh install
 without involving MCP at all.
+
+### The `cbc` shim (to run it from anywhere)
+
+The console script is installed inside this project's environment, so a bare
+`mcp-agent-chatterbox` is not on `PATH` outside it. A tiny `.cmd` on your `PATH`
+fixes that — this one lives at `%USERPROFILE%\bin\cbc.cmd`, next to the other
+stack shims, and prefers `uv` (which resolves the project env itself) with the
+venv python as a fallback:
+
+```bat
+@echo off
+setlocal
+set "REPO=<absolute path to this repo>"
+
+where uv >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    uv run --directory "%REPO%" mcp-agent-chatterbox %*
+    exit /b %ERRORLEVEL%
+)
+if exist "%REPO%\.venv\Scripts\python.exe" (
+    "%REPO%\.venv\Scripts\python.exe" -m mcp_agent_chatterbox %*
+    exit /b %ERRORLEVEL%
+)
+echo mcp-agent-chatterbox: not found (tried uv and %REPO%\.venv)
+exit /b 1
+```
+
+Then `cbc worker`, `cbc worker-status`, `cbc speak "..."` work from any directory.
 
 ## Web surface (HTTP transport)
 
@@ -725,8 +763,9 @@ No secrets are involved.
 | `CHATTERBOX_LOGS_DIR` | `logs` | Rotating log file location |
 | `CHATTERBOX_AUTOPLAY` | `1` | Play each chunk as it renders |
 | `CHATTERBOX_MAX_CHARS` | `4000` | Reject longer single requests |
-| `CHATTERBOX_MAX_CHUNK_CHARS` | `500` | Hard cap for one sentence; longer sentences are split on word boundaries |
-| `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence between played chunks |
+| `CHATTERBOX_MAX_CHUNK_CHARS` | `500` | Hard cap for one rendered chunk — one sentence, or a whole batch. A single sentence longer than this is split on word boundaries |
+| `CHATTERBOX_SENTENCES_PER_CHUNK` | `3` | Sentences batched into one chunk. Every chunk is a separate `generate()` call costing a pause and a fresh prosody start, so `1` makes short-sentence speech staccato. The first sentence always stays alone (fast start) and a batch never exceeds `CHATTERBOX_MAX_CHUNK_CHARS` |
+| `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence between played chunks — between sentence groups when batching, not between every sentence |
 | `CHATTERBOX_WORKER_PORT` | `8765` | Loopback port the worker listens on. The server and the worker read this same value; point them at different ones and `speak` reports `worker_not_running` while a healthy worker sits on the other port |
 | `CHATTERBOX_WORKER_CONNECT_TIMEOUT` | `5` | Seconds to wait for the **connection** to the worker. Bounds the connect only, never the reply — rendering takes as long as the speech takes, and cutting the read off would abandon audio that is still being spoken |
 | `CHATTERBOX_VRAM_MB` | `4096` | Free-VRAM floor for a load attempt |

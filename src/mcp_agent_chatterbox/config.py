@@ -223,15 +223,25 @@ class Config:
         #: will take minutes and blow the context window of whoever is waiting.
         self.max_chars: int = _env_int("CHATTERBOX_MAX_CHARS", 4000)
 
-        #: Hard cap on any single generate() call. The speaker splits text into
-        #: one sentence per chunk; this only bounds the exception, a sentence so
-        #: long it must be broken. Chatterbox truncates large inputs (turbo
-        #: degrades past roughly 600 chars and comes back shorter than a shorter
-        #: prompt), so a chunk never exceeds this.
+        #: Hard cap on any single generate() call. Each chunk is one sentence, or
+        #: a batch of `sentences_per_chunk` sentences; this bounds the batch, and
+        #: bounds the exception where one sentence is so long it must be broken.
+        #: Chatterbox truncates large inputs (turbo degrades past roughly 600
+        #: chars and comes back shorter than a shorter prompt), so a chunk never
+        #: exceeds this.
         self.max_chunk_chars: int = _env_int("CHATTERBOX_MAX_CHUNK_CHARS", 500)
 
-        #: Silence in ms inserted between consecutive chunks, so sentence
-        #: boundaries do not run directly into one another.
+        #: How many sentences go into one rendered chunk. Every chunk is a
+        #: separate generate() call, so each boundary costs a pause plus a fresh
+        #: prosody start -- with one sentence per chunk a reply made of short
+        #: sentences sounds staccato. Batching two or three makes it flow. Set it
+        #: to 1 for the old one-sentence-per-file behaviour. The first sentence
+        #: always stays alone so audio starts as soon as it is rendered, and a
+        #: batch never exceeds CHATTERBOX_MAX_CHUNK_CHARS regardless of this value.
+        self.sentences_per_chunk: int = _env_int("CHATTERBOX_SENTENCES_PER_CHUNK", 3)
+
+        #: Silence in ms inserted between consecutive chunks. With batching this
+        #: is the pause between groups of sentences, not between every sentence.
         self.chunk_pause_ms: int = _env_int("CHATTERBOX_CHUNK_PAUSE_MS", 250)
 
         #: Seconds the server will wait, after the client has disconnected, for
@@ -273,6 +283,7 @@ class Config:
             f"autoplay={self.autoplay!r}, "
             f"max_chars={self.max_chars!r}, "
             f"max_chunk_chars={self.max_chunk_chars!r}, "
+            f"sentences_per_chunk={self.sentences_per_chunk!r}, "
             f"chunk_pause_ms={self.chunk_pause_ms!r}, "
             f"drain_timeout_s={self.drain_timeout_s!r}, "
             f"worker_port={self.worker_port!r}, "
