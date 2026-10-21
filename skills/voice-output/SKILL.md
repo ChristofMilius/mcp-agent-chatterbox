@@ -77,16 +77,26 @@ the output you speak.
 Never read out file paths, stack traces, JSON, or long enumerations unless
 the user explicitly asks to hear them.
 
-## Picking the model — prefer nano for English
+## Picking the model — nano is the house default
 
-`model` falls back to the server setting (turbo) when omitted, but the
-deliberate choice for **English replies is `nano`**: same architecture as
-turbo, same built-in voice and inline tags, but 110M parameters instead of
-350M — quicker to load, lighter on VRAM, and on a box where an LLM already
-occupies the GPU that headroom matters. Pass `"model": "nano"` explicitly so
-the preference does not depend on the server's default.
+`model` falls back to the server setting when omitted, and the house
+preference for **English replies is `nano`**: same architecture as turbo,
+same built-in voice and inline tags, but 110M parameters instead of 350M —
+quicker to load, lighter on VRAM, and on a box where an LLM already occupies
+the GPU that headroom matters.
 
-- English reply → `nano`, unless the user asked for turbo by name.
+**Omit `model` unless the user asked for something specific.** The server's
+configured default is a deliberate local choice about VRAM and latency;
+adding `"model": "nano"` to every call to "be safe" overrides that choice and
+is a bug, not an optimisation. `tts_status()` reports the resolved default as
+`runtime.default_model` — read that, and pass a model only when:
+
+- the user named one ("use turbo", "try the multilingual one"), or
+- they asked you to experiment, or
+- the reply is not English, which no English model can speak.
+
+- English reply → omit `model` (you get the configured default), unless the
+  user asked for a specific one by name.
 - Other languages → `multilingual` (+ `language=`); no English model speaks
   them.
 - Voice cloning or delivery style on the 500M models → `original` /
@@ -116,10 +126,10 @@ offer the voice choice alongside it.
 
 ## Making the call
 
-Minimal call — text plus the model preference from above:
+Minimal call — text only, so the configured default model and voice stand:
 
 ```json
-{ "text": "The tests all pass, and the build finished in about forty seconds.", "model": "nano" }
+{ "text": "The tests all pass, and the build finished in about forty seconds." }
 ```
 
 Audio plays automatically; everything else keeps its default.
@@ -129,6 +139,7 @@ Useful variations:
 ```json
 { "text": "Der Build ist fertig.", "model": "multilingual", "language": "de" }
 { "text": "All tests pass.", "voice": "<a name from list_voices()>" }
+{ "text": "This one in the big model.", "model": "turbo" }
 { "text": "Another line.", "play_audio": false }
 { "text": "Nightly report.", "filename": "nightly" }
 ```
@@ -154,9 +165,9 @@ Useful variations:
 - If `speak()` returns `cuda_out_of_memory`, report it in one line and
   suggest `tts_unload()` — do not retry in a loop.
 - If `reference_clip_required`, the chosen model needs a voice: for an
-  English reply fall back to `model="nano"` (no clip needed); if the
-  requested language is not English, report the missing clip instead of
-  silently switching languages.
+  English reply fall back to the server default (omit `model`; stock-voice
+  models need no clip); if the requested language is not English, report the
+  missing clip instead of silently switching languages.
 - `tts_status()` shows free VRAM and the resident model without loading
   anything; use it only when something already looks wrong.
 

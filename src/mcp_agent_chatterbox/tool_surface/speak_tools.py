@@ -74,8 +74,14 @@ def register(server, ctx) -> None:
         no length limit that requires it, the text budget is generous and long
         text is chunked automatically.
 
-        MODEL: for English, prefer model="nano" (110M, same built-in voice
-        and inline tags as turbo, lighter and quicker — pass it explicitly).
+        MODEL: "nano" is the house default for English (110M, same built-in
+        voice and inline tags as turbo, lighter and quicker). Do NOT pass
+        model= to "upgrade" it or to express a preference of your own — omit it
+        and the server's configured default stands. Pass model= only when the
+        user asked for a specific model, or to experiment when they asked you
+        to try one ("use turbo", "try the multilingual one"). Overriding
+        without being asked is a bug, not an optimisation: the configured
+        default is a deliberate local choice about VRAM and latency.
         VOICE: if the user has not named a voice, ask once which voice to
         use before the first spoken reply, then keep that voice for the
         rest of the exchange — unless tts_status reports a configured
@@ -83,12 +89,14 @@ def register(server, ctx) -> None:
         waiting on the content (speak in the built-in voice and offer the
         voice choice alongside the answer).
 
-        model:   "nano" (PREFERRED for English replies: 110M, turbo's smaller
-                 sibling with competitive quality, built-in voice, tightest
-                 budget), "turbo" (350M, English, no reference clip needed,
-                 supports inline [laugh]/[chuckle] tags),
+        model:   omit it to use the server's configured default (nano by
+                 house preference). "nano" (110M, turbo's smaller sibling with
+                 competitive quality, built-in voice, tightest budget),
+                 "turbo" (350M, English, no reference clip needed, supports
+                 inline [laugh]/[chuckle] tags),
                  "multilingual" (500M, 23 languages, requires a reference clip)
                  or "original" (500M, English, requires a reference clip).
+                 Pass this only on request — see MODEL above.
         voice:   name of a reference clip in the voices directory (its filename
                  without extension). Cloning works on every model — turbo/nano
                  fall back to their built-in voice only when no clip is given.
