@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from mcp_agent_chatterbox.config import DEFAULT_VRAM_FLOOR_MB, Config
 
 # The project root config.py anchors relative paths to.
@@ -164,6 +166,109 @@ class TestModelAndDevice:
         assert Config().device == "cuda:1"
 
 
+class TestEnvFile:
+    """
+    The project config file: the mechanism that replaces the harness env block.
+
+    These run against a tmp .env, never the repo's own, and each one restores
+    both os.environ and ENV_FILE_KEYS so no later test sees leaked state.
+    """
+
+    @pytest.fixture
+    def env_file(self, tmp_path: Path, monkeypatch):
+        """Write KEY=value lines to a tmp .env and yield its path."""
+        import mcp_agent_chatterbox.config as config_module
+
+        before = dict(os.environ)
+        before_keys = set(config_module.ENV_FILE_KEYS)
+
+        def _write(text: str) -> Path:
+            path = tmp_path / ".env"
+            path.write_text(text, encoding="utf-8")
+            return path
+
+        yield _write
+
+        for name in set(os.environ) - set(before):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in before.items():
+            if os.environ.get(name) != value:
+                monkeypatch.setenv(name, value)
+        config_module.ENV_FILE_KEYS.clear()
+        config_module.ENV_FILE_KEYS.update(before_keys)
+
+    def test_missing_file_returns_none(self, tmp_path: Path):
+        from mcp_agent_chatterbox.config import load_env_file
+
+        assert load_env_file(tmp_path / "nope.env") is None
+
+    def test_file_values_reach_config(self, env_file):
+        from mcp_agent_chatterbox.config import load_env_file
+
+        path = env_file("CHATTERBOX_MODEL=nano\nCHATTERBOX_VOICE=seven\n")
+        assert load_env_file(path) == path
+        cfg = Config()
+        assert cfg.model == "nano"
+        assert cfg.voice == "seven"
+
+    def test_exported_value_beats_file(self, env_file, monkeypatch):
+        # The documented precedence: an explicit export wins over the file, so
+        # a one-off override and a test monkeypatch both behave as expected.
+        from mcp_agent_chatterbox.config import load_env_file
+
+        monkeypatch.setenv("CHATTERBOX_MODEL", "turbo")
+        load_env_file(env_file("CHATTERBOX_MODEL=nano\n"))
+        assert Config().model == "turbo"
+
+    def test_env_file_keys_records_only_file_sourced_names(self, env_file, monkeypatch):
+        import mcp_agent_chatterbox.config as config_module
+
+        monkeypatch.setenv("CHATTERBOX_MODEL", "turbo")  # already present
+        config_module.load_env_file(
+            env_file("CHATTERBOX_MODEL=nano\nCHATTERBOX_VOICE=seven\n")
+        )
+        # VOICE came from the file; MODEL did not, so it is not recorded and a
+        # test suite can free the former without disturbing the latter.
+        assert "CHATTERBOX_VOICE" in config_module.ENV_FILE_KEYS
+        assert "CHATTERBOX_MODEL" not in config_module.ENV_FILE_KEYS
+
+    def test_quotes_comments_and_export_are_handled(self, env_file):
+        from mcp_agent_chatterbox.config import load_env_file
+
+        load_env_file(
+            env_file(
+                "# a comment\n"
+                "\n"
+                'export CHATTERBOX_VOICE="Narrator"\n'
+                "CHATTERBOX_MODEL='nano'\n"
+                "not-a-pair\n"
+            )
+        )
+        cfg = Config()
+        assert cfg.voice == "Narrator"
+        assert cfg.model == "nano"
+
+    def test_fallback_parser_matches_the_dotenv_path(self, env_file):
+        # _load_env_fallback exists for the degraded case where python-dotenv is
+        # absent. It must parse the same file the same way, or the fallback
+        # silently changes behaviour instead of degrading.
+        from mcp_agent_chatterbox.config import _load_env_fallback
+
+        _load_env_fallback(
+            env_file("# c\nexport CHATTERBOX_VOICE=\"Narrator\"\nCHATTERBOX_MODEL=nano\n")
+        )
+        cfg = Config()
+        assert cfg.voice == "Narrator"
+        assert cfg.model == "nano"
+
+    def test_fallback_parser_does_not_override_existing(self, env_file, monkeypatch):
+        from mcp_agent_chatterbox.config import _load_env_fallback
+
+        monkeypatch.setenv("CHATTERBOX_MODEL", "turbo")
+        _load_env_fallback(env_file("CHATTERBOX_MODEL=nano\n"))
+        assert os.environ["CHATTERBOX_MODEL"] == "turbo"
+
+
 class TestRepr:
     def test_repr_does_not_raise(self):
         text = repr(Config())
@@ -211,12 +316,22 @@ def test_no_credential_defaults_anywhere():
         assert not hits, f"{path.name} gives {hits} a hardcoded fallback value"
 
 
-def test_env_is_not_written_at_import():
-    # Importing the package must not mutate the process environment.
-    before = dict(os.environ)
+def test_import_does_not_override_exported_values(monkeypatch):
+    """
+    Importing the package seeds os.environ from .env but must never clobber a
+    value the caller exported. This replaces an older test that asserted import
+    mutates nothing at all: that was true while settings came only from the
+    harness, but the point of .env is precisely to mutate the environment at
+    import. The invariant worth keeping is environment-over-file precedence —
+    an explicit export still wins, so a one-off override and a monkeypatch both
+    behave as the caller expects.
+    """
     import importlib
+
+    monkeypatch.setenv("CHATTERBOX_MODEL", "turbo")
 
     import mcp_agent_chatterbox.config as config_module
 
     importlib.reload(config_module)
-    assert dict(os.environ) == before
+
+    assert os.environ["CHATTERBOX_MODEL"] == "turbo"

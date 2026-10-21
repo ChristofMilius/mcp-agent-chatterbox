@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_agent_chatterbox.config import Config
+from mcp_agent_chatterbox.config import ENV_FILE_KEYS, Config
 
 # Env vars that Config reads. Cleared so a developer's own shell cannot leak
 # into a test run and change the expected result.
@@ -21,7 +21,7 @@ _CONFIG_ENV = [
     "CHATTERBOX_DEVICE",
     "CHATTERBOX_GPU_INDEX",
     "CHATTERBOX_VRAM_MB",
-"CHATTERBOX_STRICT_VRAM",
+    "CHATTERBOX_STRICT_VRAM",
     "CHATTERBOX_AUTOPLAY",
     "CHATTERBOX_HF_HOME",
     "CHATTERBOX_MAX_CHARS",
@@ -32,7 +32,11 @@ _CONFIG_ENV = [
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for name in _CONFIG_ENV:
+    # _CONFIG_ENV covers what a developer's shell might export; ENV_FILE_KEYS
+    # covers what config.load_env_file() seeded from the real .env at import
+    # time. Without the second set, a machine with a local .env would run these
+    # tests against those values and the expected results would drift.
+    for name in (*_CONFIG_ENV, *ENV_FILE_KEYS):
         monkeypatch.delenv(name, raising=False)
 
 

@@ -1,7 +1,21 @@
 """
 config.py — All configuration in one place
 ==========================================
-Loads from environment variables. No secrets involved.
+Loads from a project `.env` file, then the environment. No secrets involved.
+
+Why the file exists: agent harnesses are not reliable carriers of environment
+variables. LM Studio's `mcp.json` and Hermes both accept an `env` block and
+neither was observed forwarding it to the server subprocess, so every
+CHATTERBOX_* setting silently fell back to its compiled default — the server
+came up on turbo with no voice while the config asked for nano and a clip.
+Reading the settings from a file the server opens itself removes that
+dependency entirely: the same config now applies under LM Studio, Hermes and
+opencode, and there is exactly one place to edit.
+
+Precedence is environment-over-file, deliberately. Values already present in
+os.environ are never overwritten by the file, so an explicit export (a
+one-off CHATTERBOX_MODEL=turbo, a CI job, a test's monkeypatch) still wins,
+and the file is what you edit for the durable setting.
 
 Path resolution:
   - All path fields are resolved to absolute paths at construction time.
@@ -29,12 +43,76 @@ logger = logging.getLogger(__name__)
 # All relative path env vars are resolved against this, never against CWD.
 _BASE = Path(__file__).resolve().parent.parent.parent
 
+#: The project config file, read once at import. See the module docstring for
+#: why settings live here instead of only in the harness's env block.
+ENV_FILE = _BASE / ".env"
+
+#: Names that load_env_file() filled in from the file (as opposed to names the
+#: caller had already exported). Used by the test suite to undo import-time
+#: loading so a developer's real .env cannot make a test machine-dependent.
+ENV_FILE_KEYS: set[str] = set()
+
 #: Free VRAM (MiB) a CUDA device must have before a model load is attempted.
 #: Chatterbox weights are loaded straight onto the device (see the module
 #: docstring in __init__.py for why there is no CPU-staging path), so a load
 #: that starts with less headroom than this fails with a bare CUDA OOM part
 #: way through reading the checkpoint. We check first and say something useful.
 DEFAULT_VRAM_FLOOR_MB = 4096
+
+
+def load_env_file(path: Path | None = None) -> Path | None:
+    """
+    Seed os.environ from the project `.env`, without overriding real exports.
+
+    python-dotenv is used when importable (it is a declared dependency); if it
+    is somehow missing we fall back to a minimal parser rather than silently
+    starting on defaults, because that silent-default path is the exact failure
+    this file exists to prevent.
+
+    Every name this fills in is recorded in ENV_FILE_KEYS, so a test (or an
+    embedder) can tell a value that came from the file apart from one the
+    caller exported. Without that, a developer's real .env would leak into the
+    suite via import-time loading and the tests would depend on the machine.
+
+    Returns the path that was read, or None when there is no file.
+    """
+    target = path or ENV_FILE
+    if not target.is_file():
+        return None
+    before = set(os.environ)
+    try:
+        from dotenv import load_dotenv
+    except ImportError:  # pragma: no cover — declared dependency
+        _load_env_fallback(target)
+    else:
+        load_dotenv(target, override=False)
+    ENV_FILE_KEYS.clear()
+    ENV_FILE_KEYS.update(set(os.environ) - before)
+    return target
+
+
+def _load_env_fallback(path: Path) -> None:
+    """
+    Parse `KEY=value` lines and fill in only what os.environ lacks.
+
+    Deliberately minimal: blank lines and `#` comments are skipped, values may
+    be quoted, and `export ` prefixes are tolerated. Late-bound values
+    (${VAR}) are not expanded — install python-dotenv for anything exotic.
+    """
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+load_env_file()
 
 
 def _resolve_path(raw: str) -> Path:

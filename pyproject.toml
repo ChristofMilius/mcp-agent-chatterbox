@@ -15,6 +15,12 @@ requires-python = ">=3.13,<3.14"
 dependencies = [
     "mcp[cli]>=2.0.0",
     "chatterbox-tts",
+    # Reads the project .env (config.load_env_file). It already arrives
+    # transitively via mcp[cli]'s "cli" extra, but that is an extra we do not
+    # control: if mcp ever drops it, config would fall back to defaults and
+    # every setting in .env would be silently ignored. Declared so the
+    # mechanism cannot disappear from under us.
+    "python-dotenv>=1.0.0",
     # Pinned to the exact versions the live validation ran on, so that
     # redirecting torch to the CUDA wheel index below cannot fork the
     # resolution. torch/torchaudio were lifted from chatterbox-tts's 2.6.0
@@ -49,7 +55,6 @@ dev = [
     "pytest-cov>=7.0.0",
     "ruff>=0.10.0",
 ]
-
 # Chatterbox on Windows: the default PyPI torch wheel is already a CUDA build,
 # but pinning the official CUDA index makes the accelerator explicit and
 # reproducible instead of an accident of the platform. cu132 carries the

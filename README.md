@@ -197,6 +197,14 @@ absent from that child. The server then has no `HF_HOME`, and `huggingface_hub`
 falls back to the default under `C:\` — no error, just a download to the wrong
 drive.
 
+Worse, the `env:` block itself turned out not to be a dependable carrier. LM
+Studio's `mcp.json` and Hermes both accept one, both are spec-correct, and
+neither was observed forwarding it to the server subprocess in practice — every
+`CHATTERBOX_*` setting quietly fell back to its compiled default. This is why
+the server now reads a project `.env` file it opens itself; see
+[Configuration](#configuration). That file is the source of truth, and it makes
+`CHATTERBOX_HF_HOME` work regardless of what the harness chooses to pass.
+
 This is **not** about `PATH`. `PATH` is the list of directories searched for
 executables and has nothing to do with where a cache is written. The variable
 that matters is `HF_HOME`, and the thing that failed was process environment
@@ -210,12 +218,11 @@ applies `CHATTERBOX_HF_HOME` to `HF_HOME` inside `engine.load()` — immediately
 before `load_model_class()`, and before anything has touched
 `huggingface_hub` — so the cache root is fixed at the only moment that matters.
 
-Together these are why setting the cache path **in the server's own
-registration** is the robust move:
+Together these are why setting the cache path **in the project `.env`** is the
+robust move:
 
-```yaml
-env:
-  CHATTERBOX_HF_HOME: /path/to/hf-cache   # sets HF_HOME before the model import
+```dotenv
+CHATTERBOX_HF_HOME=/path/to/hf-cache   # sets HF_HOME before the model import
 ```
 
 Setting it here and in your system environment to the same path is fine — the
@@ -227,8 +234,8 @@ somewhere arbitrary.
 takes minutes again, and a second copy of the model appears under
 `C:\Users\<you>\.cache\huggingface\hub\models--ResembleAI--chatterbox-<model>`.
 `HF_HOME` is sealed per *process*, so a harness restart re-reads config while a
-long-running server does not — check the server's registration, and the
-registration's `env:` block, when hunting this.
+long-running server does not — check `.env`, and the server's startup log line,
+when hunting this. The ready line records which config file was read.
 
 **Corollary for `nano`.** Because `nano` is a separate HF repo, switching
 `CHATTERBOX_MODEL` from `turbo` to `nano` (or back) is a **fresh download**, not
@@ -238,7 +245,8 @@ effect, so get the cache path right *before* that first nano call.
 
 ## Registering the MCP server
 
-Add to `~/.config/opencode/opencode.jsonc`:
+**Settings go in `.env`, not here.** The server reads `.env` from the repo root
+at startup, so registration only needs to say how to launch it:
 
 ```jsonc
 {
@@ -249,80 +257,45 @@ Add to `~/.config/opencode/opencode.jsonc`:
         "uv", "run", "--directory", "<absolute path to this repo>",
         "mcp-agent-chatterbox", "serve"
       ],
-      "environment": {
-        // ----- which model and voice -----
-        // Model speak() uses when a call names none. turbo and nano both
-        // have a built-in voice and are faster to load than the 500M
-        // models; nano is a separate HF repo, so switching to it is a
-        // fresh download (see "Model weights").
-        "CHATTERBOX_MODEL": "turbo",
-
-        // Default reference clip when a call names neither voice= nor
-        // reference_clip= (optional). Resolved like any other voice name;
-        // a typo fails fast with voice_not_found, it never silently
-        // renders in another voice. Required for multilingual/original.
-        "CHATTERBOX_VOICE": "<a name from list_voices>",
-
-        // Where reference clips live. Relative paths resolve against the
-        // project root, never the process CWD.
-        "CHATTERBOX_VOICES_DIR": "voices",
-
-        // ----- where the model weights are cached -----
-        // Strongly recommended. Sets HF_HOME before huggingface_hub is
-        // imported, so the multi-GB download lands here instead of
-        // C:\Users\<you>\.cache\huggingface. This is the setting that
-        // survives a harness which does NOT forward the user environment
-        // to MCP subprocesses — set it here, not in your shell. Forward
-        // slashes are fine on Windows.
-        "CHATTERBOX_HF_HOME": "/path/to/hf-cache",
-
-        // ----- which GPU -----
-        // "auto" (default) picks the CUDA device with the most free
-        // memory. doctor shows which card LM Studio is not sitting on.
-        "CHATTERBOX_DEVICE": "auto",
-
-        // Pin a specific card instead of trusting the auto heuristic.
-        "CHATTERBOX_GPU_INDEX": "0",
-
-        // Free-VRAM floor (MiB) for a load attempt, and whether falling
-        // below it warns (0, default) or refuses (1).
-        "CHATTERBOX_VRAM_MB": "4096",
-        "CHATTERBOX_STRICT_VRAM": "0",
-
-        // ----- playback and output -----
-        // Play each sentence chunk after writing it (1/0/true/false;
-        // default on). Rendering and playback run in the background, so a
-        // speak call returns immediately.
-        "CHATTERBOX_AUTOPLAY": "1",
-
-        // WAVs and logs. Relative paths resolve against the project root,
-        // never the process CWD.
-        "CHATTERBOX_OUTPUT_DIR": "tts_output",
-        "CHATTERBOX_LOGS_DIR": "logs",
-
-        // ----- long text -----
-        // Reject single requests longer than this (chars)...
-        "CHATTERBOX_MAX_CHARS": "4000",
-
-        // ...and hard-cap any single sentence at this many chars. Text is
-        // normally split one sentence per chunk, so this only bites on a
-        // pathological run-on sentence.
-        "CHATTERBOX_MAX_CHUNK_CHARS": "500",
-        "CHATTERBOX_CHUNK_PAUSE_MS": "250"
-      },
       "enabled": true
     }
   }
 }
 ```
 
-Every setting from the [Configuration](#configuration) table can go in that
-`environment` block. Nothing is loaded at startup, so an `enabled: true`
-server stays idle until a tool call arrives.
+Copy `.env.example` to `.env` and edit that — see
+[Configuration](#configuration) for the full key list and the reason this
+indirection exists. Nothing is loaded at startup, so an `enabled: true` server
+stays idle until a tool call arrives.
+
+### The `environment` block, and why it is not the source of truth
+
+Most harnesses accept an `env` / `environment` block and some do honour it. It
+is kept here as a **per-harness override** — useful for pointing one client at a
+different GPU or model than the rest — but it must not be the only place a
+setting lives:
+
+```jsonc
+      "environment": {
+        // Overrides for THIS client only. The durable value belongs in .env.
+        "CHATTERBOX_MODEL": "turbo",
+        "CHATTERBOX_GPU_INDEX": "0"
+      }
+```
+
+Precedence is **environment over `.env`**: a variable already present in the
+process environment is never overwritten by the file. That is what makes the
+override above work, and it is also why a one-off `CHATTERBOX_MODEL=turbo` in a
+shell, or a test's monkeypatch, always wins.
+
+The trap this arrangement exists to close: LM Studio's `mcp.json` and Hermes
+both accept an `env` block, both are spec-correct (`env` is the key — there is
+nothing to rename), and neither forwarded it to the server subprocess in
+practice. With `.env` in play that failure is inert, because the file is read by
+the server itself and no harness has to pass anything.
 
 **YAML-based harnesses** (clients that configure MCP servers in a `.yaml` file
-rather than JSON) take the same command, with `command`/`args` split and the
-environment named `env`:
+rather than JSON) take the same command, with `command`/`args` split:
 
 ```yaml
   chatterbox:
@@ -333,21 +306,15 @@ environment named `env`:
       - <absolute path to this repo>
       - mcp-agent-chatterbox
       - serve
-    env:
-      CHATTERBOX_HF_HOME: /path/to/hf-cache   # set it here - not every harness forwards your shell env
+    env:                     # optional overrides; .env holds the durable values
       CHATTERBOX_MODEL: turbo
-      CHATTERBOX_VOICE: <a name from list_voices>
       CHATTERBOX_GPU_INDEX: '1'
-      CHATTERBOX_AUTOPLAY: '1'
-      CHATTERBOX_OUTPUT_DIR: tts_output
-      CHATTERBOX_LOGS_DIR: logs
 ```
 
 Quote the numeric-looking values (`'1'`) — YAML would otherwise read them as
 integers, and a non-string env value is a harness-specific coin flip.
 
-**LM Studio Bionic / Claude Desktop / other clients:** the same command and
-environment work in their own config format — strict JSON (no comments),
+**LM Studio / Claude Desktop / other strict-JSON clients:** the same command,
 `command` split from `args`, and the environment named `env`:
 
 ```json
@@ -360,28 +327,21 @@ environment work in their own config format — strict JSON (no comments),
         "mcp-agent-chatterbox", "serve"
       ],
       "env": {
-        "CHATTERBOX_HF_HOME": "/path/to/hf-cache",
         "CHATTERBOX_MODEL": "turbo",
-        "CHATTERBOX_VOICE": "<a name from list_voices>",
-        "CHATTERBOX_VOICES_DIR": "voices",
-        "CHATTERBOX_DEVICE": "auto",
-        "CHATTERBOX_GPU_INDEX": "1",
-        "CHATTERBOX_VRAM_MB": "4096",
-        "CHATTERBOX_STRICT_VRAM": "0",
-        "CHATTERBOX_AUTOPLAY": "1",
-        "CHATTERBOX_OUTPUT_DIR": "tts_output",
-        "CHATTERBOX_LOGS_DIR": "logs",
-        "CHATTERBOX_MAX_CHARS": "4000",
-        "CHATTERBOX_MAX_CHUNK_CHARS": "500",
-        "CHATTERBOX_CHUNK_PAUSE_MS": "250"
+        "CHATTERBOX_GPU_INDEX": "1"
       }
     }
   }
 }
 ```
 
-Restart the client. The server speaks stdio, loads no weights at startup,
-and stays responsive while the model is idle.
+Restart the client. The server speaks stdio, loads no weights at startup, and
+stays responsive while the model is idle. Its first log line records the config
+it resolved, so a wrong setting is visible without a tool call:
+
+```
+[server] mcp-agent-chatterbox v0.1.0 ready (output=…, voices=…, model=nano, voice=seven, config=I:\…\.env)
+```
 
 ## Skill: teaching an agent to answer by voice
 
@@ -670,7 +630,33 @@ harness on the same box, or testing. It is not an authenticated service.
 
 ## Configuration
 
-All settings are environment variables, read at startup. No secrets.
+Settings live in a **`.env` file at the repo root**, read once at startup.
+Copy `.env.example` and edit it:
+
+```bash
+cp .env.example .env
+```
+
+The file documents every key inline. `.env` is git-ignored — it holds
+machine-specific values (paths, GPU choice, the model you have cached) — while
+`.env.example` is tracked and is the reference list.
+
+**Why a file and not just the harness's `env` block?** Because `env` blocks are
+not reliably delivered. LM Studio's `mcp.json` and Hermes both accept one, both
+are spec-correct, and neither was observed forwarding it to the server
+subprocess — the server came up on its compiled defaults while the config asked
+for something else, silently. A file the server opens itself has no such
+dependency: the same settings apply under LM Studio, Hermes and opencode, and
+there is one place to edit. See
+[The `environment` block](#the-environment-block-and-why-it-is-not-the-source-of-truth)
+for using `env` as a per-harness override on top of this.
+
+**Precedence is environment-over-file.** A variable already present in the
+process environment is never overwritten by `.env`. So `CHATTERBOX_MODEL=turbo
+uv run …`, a CI job, or a test's monkeypatch all win over the file; the file
+holds the durable value.
+
+No secrets are involved.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -687,10 +673,20 @@ All settings are environment variables, read at startup. No secrets.
 | `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence between played chunks |
 | `CHATTERBOX_VRAM_MB` | `4096` | Free-VRAM floor for a load attempt |
 | `CHATTERBOX_STRICT_VRAM` | `0` | `1` refuses a load below the floor instead of warning |
-| `CHATTERBOX_HF_HOME` | unset | Where the Hugging Face cache lives. Does not compete with `HF_HOME` — it **sets** it, at load time, before `huggingface_hub` seals the value on import. Use it in the MCP server's registration so the cache root cannot be lost to a harness that does not forward your environment. See [Model weights](#model-weights) |
+| `CHATTERBOX_HF_HOME` | unset | Where the Hugging Face cache lives. Does not compete with `HF_HOME` — it **sets** it, at load time, before `huggingface_hub` seals the value on import. Set it in `.env` so the cache root cannot be lost to a harness that does not forward your environment. See [Model weights](#model-weights) |
 
 Relative paths resolve against the project root, never the process CWD, since
 MCP harnesses spawn servers with an unpredictable working directory.
+
+**Windows note:** use forward slashes in path values. Backslashes are not
+reliably handled by `python-dotenv`.
+
+The server's first log line states exactly which config was resolved, so a
+setting that failed to arrive is visible without issuing a tool call:
+
+```
+[server] mcp-agent-chatterbox v0.1.0 ready (output=…, voices=…, model=nano, voice=seven, config=I:\…\.env)
+```
 
 ### Choosing a GPU
 

@@ -938,6 +938,7 @@ source = { editable = "." }
 dependencies = [
     { name = "chatterbox-tts" },
     { name = "mcp", extra = ["cli"] },
+    { name = "python-dotenv" },
     { name = "setuptools" },
     { name = "torch" },
     { name = "torchaudio" },
@@ -956,6 +957,7 @@ requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=2.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=7.0.0" },
+    { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.10.0" },
     { name = "setuptools", specifier = ">=83.0.0" },
     { name = "torch", specifier = "==2.14.0", index = "https://download.pytorch.org/whl/cu132" },

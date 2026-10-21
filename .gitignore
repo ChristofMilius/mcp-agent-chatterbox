@@ -4,6 +4,7 @@
 # Whitelist: un-ignore exactly what is versioned
 !.gitignore
 !/.python-version
+!/.env.example
 !/LICENSE
 !/README.md
 !/pyproject.toml
@@ -29,6 +30,11 @@
 *.flac
 *.pt
 *.safetensors
+
+# Local settings, never versioned. The leading `*` already excludes this, but
+# it is re-ignored after the un-ignores above so a future whitelist edit
+# cannot sweep real machine values into the index. Ship .env.example instead.
+/.env
 
 # Re-ignore generated artifacts. These come AFTER the !/src/** and !/tests/**
 # un-ignores above on purpose: a whitelist entry like !/src/** re-includes

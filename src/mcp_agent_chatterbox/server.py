@@ -13,7 +13,7 @@ from typing import Literal
 from mcp.server.mcpserver import MCPServer
 
 from mcp_agent_chatterbox import __version__
-from mcp_agent_chatterbox.config import Config
+from mcp_agent_chatterbox.config import ENV_FILE, Config
 from mcp_agent_chatterbox.context import AppContext
 from mcp_agent_chatterbox.engine import ChatterboxEngine
 from mcp_agent_chatterbox.logging_setup import setup_logging
@@ -90,12 +90,14 @@ def create_server(ctx: AppContext | None = None) -> MCPServer:
     register_all(server, ctx)
 
     logger.info(
-        "[server] %s v%s ready (output=%s, voices=%s, model=%s)",
+        "[server] %s v%s ready (output=%s, voices=%s, model=%s, voice=%s, config=%s)",
         SERVER_NAME,
         __version__,
         ctx.cfg.output_dir,
         ctx.cfg.voices_dir,
         ctx.cfg.model,
+        ctx.cfg.voice or "unset",
+        ENV_FILE if ENV_FILE.is_file() else "no .env - defaults in use",
     )
     return server
 
