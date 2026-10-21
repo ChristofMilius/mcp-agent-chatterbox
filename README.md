@@ -26,6 +26,38 @@ mcp-agent-chatterbox worker-status   # is it up? what is it doing?
 mcp-agent-chatterbox worker-stop     # finish the queue, then exit
 ```
 
+### How the pieces fit
+
+```
+LLM / agent
+   │  MCP tool call: speak(text=...)
+   ▼
+MCP server  (mcp_agent_chatterbox.server, cli: `serve`)
+   │  one JSON line per request over TCP 127.0.0.1:8765
+   ▼
+worker      (mcp_agent_chatterbox.worker, cli: `worker`)
+   │  Speaker → ChatterboxEngine → model on the GPU
+   ▼
+sentence-batched chunks → tts_output/*.wav → speakers
+```
+
+Three consequences, each of which explains a behaviour you will otherwise trip
+over:
+
+- **The `speak` tool is still the way an agent speaks.** The worker does not
+  implement MCP and never sees a JSON-RPC frame; it only understands small
+  newline-delimited JSON requests (`speak`, `status`, `unload`, `stop`,
+  `shutdown`). The MCP server is the adapter that turns a tool call into that
+  request. So an agent needs the server *and* the worker; the server alone writes
+  no audio.
+- **The server holds no model.** It boots in milliseconds and stays responsive
+  because there is nothing in it to load. That is deliberate: `tts_status` and
+  `list_voices` must answer while a model is still downloading.
+- **The CLI is a second front door, not a third layer.** `cbc speak "..."` runs
+  the same `Speaker` directly, without the MCP server; `cbc worker*` commands use
+  the same TCP socket the server uses. Nothing in the CLI is a parallel
+  implementation of synthesis.
+
 **Why a separate process.** Synthesis used to happen inside the MCP server, and
 inside that process it reliably stopped after two sentences and never resumed.
 The same code outside a server finished the whole reply every time. It failed
@@ -633,41 +665,90 @@ uv run mcp-agent-chatterbox serve
 ```
 
 The console script is only on `PATH` inside the project (or via `uv run`). To call
-it from anywhere, add a one-line shim — see
-[The `cbc` shim](#the-cbc-shim-to-run-it-from-anywhere).
+it from anywhere, install a tiny shim — see
+[Install the `cbc` shim](#install-the-cbc-shim-to-run-it-from-anywhere).
 
 `worker` runs the resident process in the foreground; it loads the model on the
 first utterance and keeps it loaded. `speak` shares the same code path and blocks
 until the queue is drained, so it is the fastest way to check a fresh install
 without involving MCP at all.
 
-### The `cbc` shim (to run it from anywhere)
+### Install the `cbc` shim (to run it from anywhere)
 
-The console script is installed inside this project's environment, so a bare
-`mcp-agent-chatterbox` is not on `PATH` outside it. A tiny `.cmd` on your `PATH`
-fixes that — this one lives at `%USERPROFILE%\bin\cbc.cmd`, next to the other
-stack shims, and prefers `uv` (which resolves the project env itself) with the
-venv python as a fallback:
+`pip`/`uv` installs the console script **inside this project's environment only**,
+so from any other directory `mcp-agent-chatterbox` is not a command. That is the
+one thing that bites in practice: you start a resident worker once, and you want
+to do it from wherever you happen to be, not from the repo. A one-line `.cmd`
+shim on `PATH` closes that gap.
+
+Nothing extra is shipped for this — the shim is three branches and belongs in
+*your* bin directory, not in the repo (it embeds an absolute path that differs
+per machine). Create the file yourself:
+
+**1. Pick a directory that is already on `PATH`.** `%USERPROFILE%\bin` is the
+convention this stack uses; confirm it resolves:
+
+```powershell
+$env:PATH -split ';' | Select-String -SimpleMatch "$env:USERPROFILE\bin"
+```
+
+If that prints nothing, either use a directory that *is* on `PATH`, or add this
+one permanently (then open a new terminal):
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  'Path',
+  [Environment]::GetEnvironmentVariable('Path', 'User') + ";$env:USERPROFILE\bin",
+  'User'
+)
+```
+
+**2. Create `%USERPROFILE%\bin\cbc.cmd`** with your own repo path in `REPO`:
 
 ```bat
 @echo off
+REM cbc — run mcp-agent-chatterbox from any directory.
 setlocal
 set "REPO=<absolute path to this repo>"
 
+REM Preferred: uv resolves the project environment itself.
 where uv >nul 2>&1
 if %ERRORLEVEL% equ 0 (
     uv run --directory "%REPO%" mcp-agent-chatterbox %*
     exit /b %ERRORLEVEL%
 )
+
+REM Fallback: the project venv, for machines without uv.
 if exist "%REPO%\.venv\Scripts\python.exe" (
     "%REPO%\.venv\Scripts\python.exe" -m mcp_agent_chatterbox %*
     exit /b %ERRORLEVEL%
 )
-echo mcp-agent-chatterbox: not found (tried uv and %REPO%\.venv)
+
+echo cbc: mcp-agent-chatterbox not found.
+echo   tried: uv run --directory "%REPO%" mcp-agent-chatterbox
+echo   tried: "%REPO%\.venv\Scripts\python.exe" -m mcp_agent_chatterbox
+echo Is the repo path right, and has the environment been synced?
 exit /b 1
 ```
 
-Then `cbc worker`, `cbc worker-status`, `cbc speak "..."` work from any directory.
+**3. Verify** from a directory that is *not* the repo — this is the whole point:
+
+```powershell
+cd C:\
+cbc worker-status
+```
+
+Expect either `worker on 127.0.0.1:8765: idle` or a `no worker on ...` line. Both
+prove the shim reached the package; only the first proves a worker is running.
+
+Why two branches: `uv run` is the fast path and cannot drift from the lockfile,
+but it is useless on a machine without `uv`. The venv fallback needs no tooling
+beyond the synced environment. `%*` forwards every argument and `exit /b
+%ERRORLEVEL%` keeps the exit code, so `cbc worker-status` still exits non-zero
+when no worker is up — which is what makes it usable in a script.
+
+Then from anywhere: `cbc worker`, `cbc worker-status`, `cbc worker-stop`,
+`cbc doctor`, `cbc speak "..."`.
 
 ## Web surface (HTTP transport)
 
