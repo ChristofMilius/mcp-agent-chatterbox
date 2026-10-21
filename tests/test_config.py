@@ -7,7 +7,12 @@ from pathlib import Path
 
 import pytest
 
-from mcp_agent_chatterbox.config import DEFAULT_VRAM_FLOOR_MB, Config
+from mcp_agent_chatterbox.config import (
+    DEFAULT_VRAM_FLOOR_MB,
+    DEFAULT_WORKER_CONNECT_TIMEOUT_S,
+    DEFAULT_WORKER_PORT,
+    Config,
+)
 
 # The project root config.py anchors relative paths to.
 _BASE = Path(__file__).resolve().parent.parent
@@ -26,6 +31,9 @@ class TestDefaults:
         assert c.max_chars == 4000
         assert c.max_chunk_chars == 500
         assert c.chunk_pause_ms == 250
+        assert c.drain_timeout_s == 300
+        assert c.worker_port == DEFAULT_WORKER_PORT
+        assert c.worker_connect_timeout_s == DEFAULT_WORKER_CONNECT_TIMEOUT_S
         assert c.hf_home is None
 
 
@@ -117,6 +125,31 @@ class TestIntegers:
         c = Config()
         assert c.max_chunk_chars == 500
         assert c.chunk_pause_ms == 250
+
+    def test_drain_timeout_parses(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_DRAIN_TIMEOUT", "45")
+        assert Config().drain_timeout_s == 45
+
+    def test_drain_timeout_zero_is_allowed(self, monkeypatch):
+        # 0 means "do not wait at all", a legitimate choice, not a fallback.
+        monkeypatch.setenv("CHATTERBOX_DRAIN_TIMEOUT", "0")
+        assert Config().drain_timeout_s == 0
+
+    def test_drain_timeout_blank_falls_back(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_DRAIN_TIMEOUT", "")
+        assert Config().drain_timeout_s == 300
+
+    def test_worker_port_parses(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_WORKER_PORT", "9123")
+        assert Config().worker_port == 9123
+
+    def test_worker_port_blank_falls_back(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_WORKER_PORT", "")
+        assert Config().worker_port == DEFAULT_WORKER_PORT
+
+    def test_worker_connect_timeout_parses(self, monkeypatch):
+        monkeypatch.setenv("CHATTERBOX_WORKER_CONNECT_TIMEOUT", "30")
+        assert Config().worker_connect_timeout_s == 30
 
 
 class TestGpuIndex:

@@ -1,44 +1,49 @@
 """
 speak.py — queued synthesis and playback
 ========================================
-The one synthesis path. Both entry points use it: the MCP tool in
-tool_surface/speak_tools.py and the `speak` CLI subcommand. Keeping one
-implementation means a bug cannot be fixed in the tool and left broken on the
-command line (or vice versa).
+The one synthesis path. Both entry points use it: the resident worker
+(worker.py) and the `speak` CLI subcommand. Keeping one implementation means a
+bug cannot be fixed in the worker and left broken on the command line (or vice
+versa).
 
 How a call flows
 ----------------
 submit() validates the request (text budget, model, language, reference clip,
 knob ranges), splits the text into sentence chunks and puts the job on a
-process-local FIFO. It returns immediately — the caller gets the message id and
-the chunk filenames, not rendered audio.
+process-local FIFO. It returns as soon as the text is accepted — the caller gets
+the message id and the chunk filenames, not rendered audio.
 
-A daemon worker then, for each chunk in order: renders it with the same voice
+A worker thread then, for each chunk in order: renders it with the same voice
 and knobs, writes it as ``<message_id>_<n>.wav`` and plays it the moment it is
 written, sleeping ``CHATTERBOX_CHUNK_PAUSE_MS`` between chunks. The result is
 speech that starts within one sentence and continues without gaps while the
 rest of the reply is still being generated.
+
+Who waits, and who does not
+---------------------------
+submit() returns immediately and the FIFO does the long work, because the module
+that drives it may not be able to wait. The CLI's `speak` subcommand and the
+worker both call wait() (or drain()) afterwards, so *they* block until the audio
+has been spoken — that is the honest thing for a resident process to do. A
+caller that holds the FIFO without waiting must arrange to outlive the work,
+which is the whole reason the worker is a separate long-lived process rather
+than a thread inside the MCP server (see worker.py).
 
 Why a queue and not an in-request loop
 --------------------------------------
 Chatterbox's generate() truncates large inputs (turbo degrades past roughly 600
 chars and comes back shorter than a shorter prompt; the 500M models cap their
 output at 1000 speech tokens), so long text must be split. Splitting per
-sentence in an in-request loop still makes the tool call last as long as the
-whole reply takes to render, and MCP clients time tool calls out on the order of
-a minute — LM Studio's default is ~60 s. A timed-out call does not cancel the
-render: the client reports failure while the server keeps synthesising, and a
-restart kills the audio mid-sentence. A queue makes the call cost milliseconds
-and moves the long work where a client timeout cannot touch it.
-
-The FIFO also means two replies arriving back to back never overlap: the second
-waits for the first to finish speaking.
+sentence in an in-request loop would make one call last as long as the whole
+reply takes to render. The FIFO lets the render happen where it cannot be
+touched by a client timeout, and it means two utterances arriving back to back
+never overlap: the second waits for the first to finish speaking.
 
 Recoverable conditions — empty text, over-long text, unknown model, bad
 language, missing reference clip — are raised as ToolFault by submit(), before
 anything is queued, so the caller can render them its own way. Failures during
-rendering (VRAM, a failed generate) cannot be reported to a caller that has
-already been answered; they are logged and recorded in the last-result summary.
+rendering (VRAM, a failed generate) are recorded in the last-result summary and
+reported back through the worker's status and speak responses.
 """
 
 from __future__ import annotations
@@ -47,6 +52,7 @@ import logging
 import queue
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -61,6 +67,14 @@ from mcp_agent_chatterbox.registry import SUPPORTED_LANGUAGES, T3_MODELS, get_sp
 from mcp_agent_chatterbox.voices import resolve_voice
 
 logger = logging.getLogger(__name__)
+
+#: Every Speaker that has been constructed and not yet collected. The worker
+#: thread is non-daemon (so real speech survives a per-turn harness), which
+#: means a Speaker that is never stopped pins the interpreter. Tests and
+#: embedders use stop_all_speakers() to release them; the long-lived server
+#: registers drain() with atexit instead. Weak so this never keeps a Speaker
+#: alive by itself.
+_LIVE_SPEAKERS: weakref.WeakSet[Speaker] = weakref.WeakSet()
 
 _CLIP_SUFFIXES = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
 
@@ -298,7 +312,9 @@ class Speaker:
     def __init__(self, cfg: Config, engine: Synthesizer) -> None:
         self.cfg = cfg
         self.engine = engine
-        self._queue: queue.Queue[_Job] = queue.Queue()
+        # None is the shutdown sentinel put by drain(); it is why this is not
+        # Queue[_Job]. The worker treats it as "queue empty, stop looping".
+        self._queue: queue.Queue[_Job | None] = queue.Queue()
         self._worker: threading.Thread | None = None
         self._guard = threading.Lock()
         self._idle = threading.Condition(self._guard)
@@ -307,6 +323,7 @@ class Speaker:
         self._live: set[_Job] = set()
         self._last: dict | None = None
         self._last_id = ""
+        _LIVE_SPEAKERS.add(self)
 
     # -- public surface -------------------------------------------------------
     def submit(
@@ -333,7 +350,9 @@ class Speaker:
         Validate `text`, queue it, and return a JSON-safe acceptance payload.
 
         Raises ToolFault for recoverable conditions. Rendering happens on the
-        worker; this returns in milliseconds.
+        queue's own worker thread; this call itself returns in milliseconds.
+        The caller decides whether to wait for the audio (the worker and the CLI
+        both do, via wait()).
         """
         cfg = self.cfg
         body = (text or "").strip()
@@ -465,6 +484,36 @@ class Speaker:
         with self._idle:
             return self._idle.wait_for(lambda: self._pending == 0, timeout)
 
+    def teardown_report(self) -> None:
+        """
+        Log what the worker was doing when the process went away.
+
+        Diagnostic-only, run from atexit *after* drain(). It is idle now in the
+        healthy case; anything still outstanding here means the drain timed out
+        or was never registered, which is the failure that produced a "queued"
+        result with no files on disk.
+        """
+        with self._idle:
+            pending = self._pending
+            active = self._current
+            worker = self._worker
+            active_id = active.message_id if active is not None else None
+            written = list(active.written) if active is not None else []
+            total = len(active.chunks) if active is not None else 0
+        if pending == 0 and active_id is None:
+            logger.info("[speak] process exiting with an idle queue")
+            return
+        logger.error(
+            "[speak] process exiting with work outstanding: pending=%d, "
+            "active=%s, chunks_written=%d/%d, worker_alive=%s -- drain() did not "
+            "clear the queue, so these chunks were never written",
+            pending,
+            active_id,
+            len(written),
+            total,
+            worker.is_alive() if worker is not None else None,
+        )
+
     def stop(self) -> dict:
         """
         Stop playback and drop everything still queued.
@@ -480,6 +529,8 @@ class Speaker:
                 job = self._queue.get_nowait()
             except queue.Empty:
                 break
+            if job is None:
+                continue  # shutdown sentinel, not a job
             with self._idle:
                 job.cancelled.set()
                 self._live.discard(job)
@@ -522,14 +573,76 @@ class Speaker:
         with self._guard:
             if self._worker is not None and self._worker.is_alive():
                 return
+            # NOT a daemon thread. A daemon worker is destroyed the instant the
+            # process exits, and a stdio harness ends the process when the turn
+            # is over -- measured directly: speak() returns "queued", the client
+            # closes stdin, the server exits with code 0, and the worker is
+            # killed mid-chunk with 0 of 13 files written. A non-daemon worker
+            # keeps the process alive until the queue drains (see drain()).
             self._worker = threading.Thread(
-                target=self._run, name="chatterbox-speaker", daemon=True
+                target=self._run, name="chatterbox-speaker", daemon=False
             )
             self._worker.start()
+
+    def stop_worker(self) -> None:
+        """
+        Stop the worker thread, if one is running.
+
+        The worker is non-daemon so that real speech survives a per-turn harness
+        (see _ensure_worker). The cost of that choice is that the thread must be
+        stopped explicitly or the interpreter will not exit, so anything that
+        creates a Speaker and is not the long-lived server -- tests, embedders,
+        a CLI one-shot -- should call this when it is done.
+
+        Safe to call repeatedly and safe when no worker ever started. Any job
+        still queued is left queued; call wait()/drain() first if it matters.
+        """
+        with self._guard:
+            worker = self._worker
+            self._worker = None
+        if worker is None or not worker.is_alive():
+            return
+        self._queue.put(None)
+        worker.join(timeout=5.0)
+
+    def drain(self, timeout: float) -> None:
+        """
+        Wait for the queue to empty and stop the worker, bounded by `timeout`.
+
+        Called by server.run() once the transport loop has returned -- i.e. when
+        the client has disconnected and the turn is over -- so the worker can
+        finish the speech it accepted instead of being killed mid-chunk. It has
+        to run there rather than in atexit because atexit fires during
+        interpreter shutdown, and a lazily imported dependency (torch) then
+        raises "can't register atexit after shutdown"; the working chunk was
+        then unreachable and the process hung.
+
+        Bounded on purpose: a wedged engine must not keep the process alive
+        forever, so on timeout the loss is logged and the worker is still
+        stopped, because a non-daemon thread left running would pin the
+        interpreter.
+        """
+        finished = self.wait(timeout)
+        if not finished:
+            logger.error(
+                "[speak] drain timed out after %.1fs with work still queued; "
+                "some chunks were not written",
+                timeout,
+            )
+        # Stop the worker either way. It is non-daemon, so leaving it running
+        # would pin the interpreter and turn this into a hang instead of a
+        # logged, bounded loss.
+        self.stop_worker()
+        if finished:
+            logger.info("[speak] queue drained cleanly before exit")
 
     def _run(self) -> None:
         while True:
             job = self._queue.get()
+            if job is None:
+                # Sentinel from drain(): the queue is empty and the process is
+                # exiting, so leave the loop and let the interpreter finish.
+                return
             with self._guard:
                 self._current = job
             try:
@@ -552,6 +665,13 @@ class Speaker:
             if job.cancelled.is_set():
                 logger.info("[speak] %s cancelled before chunk %d/%d", job.message_id, index, total)
                 return
+            logger.info(
+                "[speak] %s rendering chunk %d/%d (%d chars)",
+                job.message_id,
+                index,
+                total,
+                len(sentence),
+            )
             try:
                 result = self.engine.synthesize(sentence, job.model, **job.knobs)
             except ToolFault as fault:
@@ -632,4 +752,17 @@ class Speaker:
             return self._last_id
 
 
-__all__ = ["Speaker", "Synthesizer", "split_sentences"]
+def stop_all_speakers() -> None:
+    """
+    Stop every live Speaker's worker thread.
+
+    The worker is non-daemon so that real speech survives a per-turn harness.
+    The price is that an unstopped worker pins the interpreter, so test suites
+    and embedders call this on the way out. The server does not: it registers
+    Speaker.drain with atexit, which waits for the queue first.
+    """
+    for speaker in list(_LIVE_SPEAKERS):
+        speaker.stop_worker()
+
+
+__all__ = ["Speaker", "Synthesizer", "split_sentences", "stop_all_speakers"]

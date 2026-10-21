@@ -7,8 +7,9 @@ Four models, chosen per call:
 
   * turbo        350M, English, native paralinguistic tags ([laugh],
                  [chuckle], ...). Lowest VRAM and lowest latency, and the
-                 only model that ships a stock voice — it can speak with no
-                 reference clip at all.
+                 only model family with a stock voice by default.
+  * nano         110M, English. Turbo's small sibling: same architecture,
+                 tags and built-in voice, tightest budget (also CPU-capable).
   * multilingual 500M, 23 languages including German. Voice cloning is
                  mandatory; there is no stock voice.
   * original     500M, English, the CFG/exaggeration-tuning model. Voice
@@ -16,9 +17,10 @@ Four models, chosen per call:
 
 Design notes worth knowing:
 
-  * Weights are never loaded at server startup. A chatterbox server must boot
-    in milliseconds so that status/voice listing stay responsive; the model
-    downloads and loads on the first speak() call and stays resident.
+  * Synthesis runs in a separate, long-lived worker process, not in the MCP
+    server (see worker.py). The server holds no engine and never loads
+    weights; it forwards speak() to the worker, which boots in milliseconds,
+    loads the model on the first utterance and keeps it resident.
 
   * Exactly one model is resident at a time (see MAX_RESIDENT). On a 12 GB
     card that is the difference between working and a CUDA OOM. Switching

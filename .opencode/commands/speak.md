@@ -18,5 +18,7 @@ Call that tool with `text` set to the text above.
 - The first call on a fresh machine downloads the model and can take a while.
   Say so once, up front, rather than appearing to hang.
 
-Then report in one short line: the output filename, the audio duration, and
-whether it played. Do not repeat or quote the spoken text back.
+Then report in one short line: how many chunk files were written, the audio
+duration, and whether it played. Do not repeat or quote the spoken text back.
+The call returns once the reply has been spoken; if it reports
+`worker_not_running`, say so and tell the user to start the worker.

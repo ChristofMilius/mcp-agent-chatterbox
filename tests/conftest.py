@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from mcp_agent_chatterbox.config import ENV_FILE_KEYS, Config
+from mcp_agent_chatterbox.speak import stop_all_speakers
 
 # Env vars that Config reads. Cleared so a developer's own shell cannot leak
 # into a test run and change the expected result.
@@ -27,6 +28,9 @@ _CONFIG_ENV = [
     "CHATTERBOX_MAX_CHARS",
     "CHATTERBOX_MAX_CHUNK_CHARS",
     "CHATTERBOX_CHUNK_PAUSE_MS",
+    "CHATTERBOX_DRAIN_TIMEOUT",
+    "CHATTERBOX_WORKER_PORT",
+    "CHATTERBOX_WORKER_CONNECT_TIMEOUT",
 ]
 
 
@@ -38,6 +42,20 @@ def _clean_env(monkeypatch):
     # tests against those values and the expected results would drift.
     for name in (*_CONFIG_ENV, *ENV_FILE_KEYS):
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _release_speakers():
+    """
+    Stop every Speaker worker a test started.
+
+    Speaker's worker thread is non-daemon on purpose: a daemon thread is
+    destroyed with the process, which is what silently truncated real speech
+    when a harness ended the turn. The cost is that an unstopped worker keeps
+    the interpreter alive, so without this the suite passes and then hangs.
+    """
+    yield
+    stop_all_speakers()
 
 
 @pytest.fixture

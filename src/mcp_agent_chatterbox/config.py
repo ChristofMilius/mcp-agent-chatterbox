@@ -52,6 +52,19 @@ ENV_FILE = _BASE / ".env"
 #: loading so a developer's real .env cannot make a test machine-dependent.
 ENV_FILE_KEYS: set[str] = set()
 
+#: Port the resident synthesis worker listens on. The MCP server never
+#: synthesizes: it hands the text to this worker, which outlives the server's
+#: per-turn process, so a long reply is not killed when the harness ends the
+#: turn. Both sides read the port from here, so a change of default cannot
+#: drift between the server that connects and the worker that binds.
+DEFAULT_WORKER_PORT = 8765
+
+#: How long the MCP server waits for a connection to the worker before it gives
+#: up and tells the caller to start one. Deliberately short: a refused connect
+#: on loopback is immediate, and a server that has no worker must not make the
+#: model wait for the tool call to time out.
+DEFAULT_WORKER_CONNECT_TIMEOUT_S = 5
+
 #: Free VRAM (MiB) a CUDA device must have before a model load is attempted.
 #: Chatterbox weights are loaded straight onto the device (see the module
 #: docstring in __init__.py for why there is no CPU-staging path), so a load
@@ -221,6 +234,29 @@ class Config:
         #: boundaries do not run directly into one another.
         self.chunk_pause_ms: int = _env_int("CHATTERBOX_CHUNK_PAUSE_MS", 250)
 
+        #: Seconds the server will wait, after the client has disconnected, for
+        #: the speech queue to finish before letting the process exit. The
+        #: worker is non-daemon and synthesis is background work, so without
+        #: this wait a per-turn harness would kill the queue mid-chunk. Sized
+        #: generously because it is only ever paid when work is outstanding:
+        #: measured warm throughput is ~0.03-0.05 s/char, so the default covers
+        #: roughly a 4000-char reply (CHATTERBOX_MAX_CHARS) plus the one-time
+        #: model load. Set it to 0 to skip the wait entirely.
+        self.drain_timeout_s: float = _env_int("CHATTERBOX_DRAIN_TIMEOUT", 300)
+
+        #: Where the resident synthesis worker lives. The MCP server reads this
+        #: to know where to send text; the `worker` subcommand reads it to know
+        #: where to listen. Point them at different ports and the server will
+        #: report that no worker is running.
+        self.worker_port: int = _env_int("CHATTERBOX_WORKER_PORT", DEFAULT_WORKER_PORT)
+
+        #: Bound on connecting to that worker. Only the connect, not the reply:
+        #: rendering a reply takes as long as it takes, and cutting the read off
+        #: would abandon audio that is still being spoken.
+        self.worker_connect_timeout_s: float = _env_int(
+            "CHATTERBOX_WORKER_CONNECT_TIMEOUT", DEFAULT_WORKER_CONNECT_TIMEOUT_S
+        )
+
     def __repr__(self) -> str:
         return (
             f"Config("
@@ -238,8 +274,16 @@ class Config:
             f"max_chars={self.max_chars!r}, "
             f"max_chunk_chars={self.max_chunk_chars!r}, "
             f"chunk_pause_ms={self.chunk_pause_ms!r}, "
+            f"drain_timeout_s={self.drain_timeout_s!r}, "
+            f"worker_port={self.worker_port!r}, "
+            f"worker_connect_timeout_s={self.worker_connect_timeout_s!r}, "
             f")"
         )
 
 
-__all__ = ["DEFAULT_VRAM_FLOOR_MB", "Config"]
+__all__ = [
+    "DEFAULT_VRAM_FLOOR_MB",
+    "DEFAULT_WORKER_CONNECT_TIMEOUT_S",
+    "DEFAULT_WORKER_PORT",
+    "Config",
+]

@@ -132,7 +132,8 @@ Minimal call — text only, so the configured default model and voice stand:
 { "text": "The tests all pass, and the build finished in about forty seconds." }
 ```
 
-Audio plays automatically; everything else keeps its default.
+Audio plays as each sentence renders; everything else keeps its default. The
+call returns once the whole reply has been spoken.
 
 Useful variations:
 
@@ -149,19 +150,24 @@ Useful variations:
   the stock turbo/nano voices are English-only).
 - **Cut off playback:** `stop_speech()` — it cuts the current sentence and
   drops anything still queued.
-- **Long replies:** `speak()` returns as soon as the text is accepted and the
-  server speaks it one sentence at a time in the background, writing
-  `<message_id>_<n>.wav` files. Put the whole reply in one call; do not retry
-  or truncate with "..." because the audio has not started yet. There is no
-  `wait`/`progressive` flag to set — the queue always behaves this way.
+- **Long replies:** put the WHOLE reply in one `speak()` call. The worker
+  splits it per sentence and speaks each as it renders, writing
+  `<message_id>_<n>.wav` files. Do not truncate with "..." because the audio
+  seems slow to start, and do not call `speak()` a second time to "get it
+  going" — the first call is already speaking and a second one queues behind
+  it. There is no `wait`/`progressive` flag; the queue always behaves this way.
+  The call returns when the reply has been spoken.
 
 ## Preflight and failure handling
 
+- The MCP server does **not** synthesize: it forwards to a resident worker.
+  If `speak()` returns `worker_not_running`, tell the user to start it
+  (`mcp-agent-chatterbox worker`) — nothing is spoken until they do.
 - First-ever `speak()` on a machine downloads weights from Hugging Face and
-  can take minutes; later calls are fast. The call itself returns immediately,
-  so the download shows up as silence before the first chunk — do not re-call
-  `speak()` because of it. `tts_status()` -> `speech.pending` tells you whether
-  the worker is still busy.
+  can take minutes; later calls are fast, since the worker keeps the model
+  loaded. The first utterance therefore starts with a long silence — do not
+  re-call `speak()` because of it. `tts_status()` -> `worker.pending` tells
+  you whether the worker is still busy.
 - If `speak()` returns `cuda_out_of_memory`, report it in one line and
   suggest `tts_unload()` — do not retry in a loop.
 - If `reference_clip_required`, the chosen model needs a voice: for an

@@ -1,12 +1,19 @@
 """
 speak_tools — the main MCP call
 ===============================
-speak: accept text for speech, chunk it per sentence, and hand it to the
-       process-local queue. The call itself returns in milliseconds; a daemon
-       worker renders and plays the chunks in the background.
+speak: accept text for speech and hand it to the resident synthesis worker.
+       Talks to worker.py over loopback; returns once the reply has been spoken.
 
-The tool is a thin shell over speak.Speaker.submit(), which the CLI shares. All
-       it adds is JSON framing and the error boundary.
+The MCP server does NOT synthesize. It used to, and it was unreliable: inside
+the server process rendering stopped after two sentences and never resumed,
+while the same code driven from a plain script finished every sentence (see
+worker.py for the full measurement). The server's job now is to carry text to
+the process that does this reliably.
+
+Because it waits, speak() takes as long as the reply takes to be spoken. That is
+the point: the worker is resident, so the audio plays in real time regardless of
+what the harness does with this process, and the tool result is an honest
+account of what was written rather than a promise to write something later.
 
 Model selection:
   * model="turbo" (default) speaks with no reference clip and understands
@@ -23,11 +30,49 @@ from __future__ import annotations
 
 import json
 
-from mcp_agent_chatterbox.errors import ToolFault, tool_error
+from mcp_agent_chatterbox.errors import tool_error
+from mcp_agent_chatterbox.worker import WorkerUnavailable, send_request
+
+#: Argument names the worker accepts on a speak request. Used by
+#: _worker_request() to copy the caller's arguments across without repeating
+#: sixteen keyword names a second time.
+_KNOBS = (
+    "model",
+    "voice",
+    "reference_clip",
+    "language",
+    "t3_model",
+    "exaggeration",
+    "cfg_weight",
+    "temperature",
+    "top_p",
+    "top_k",
+    "repetition_penalty",
+    "norm_loudness",
+    "seed",
+    "play_audio",
+    "filename",
+)
+
+
+def _worker_request(cfg, arguments: dict) -> dict:
+    """
+    Build the worker request, carrying only the knobs the caller actually set.
+
+    An omitted knob must arrive absent rather than as an explicit null: the
+    worker reads null as "unset" either way, but keeping the payload to what was
+    asked for makes the request readable in the log.
+    """
+    request = {"op": "speak", "text": arguments["text"]}
+    for name in _KNOBS:
+        value = arguments.get(name)
+        if value is not None:
+            request[name] = value
+    return request
 
 
 def register(server, ctx) -> None:
-    speaker = ctx.speaker
+    cfg = ctx.cfg
 
     @server.tool()
     def speak(
@@ -49,9 +94,7 @@ def register(server, ctx) -> None:
         filename: str | None = None,
     ) -> str:
         """
-        Speak text aloud with Chatterbox on the local GPU. The call returns as
-        soon as the text is accepted; synthesis and playback continue in the
-        background, one sentence chunk after another.
+        Speak text aloud with Chatterbox on the local GPU.
 
         WHEN TO CALL: whenever the user asks for a spoken reply -- "speak",
         "answer aloud", "reply by voice", "say it out loud", and the like --
@@ -64,33 +107,41 @@ def register(server, ctx) -> None:
         speak stays in effect for the whole exchange until the user says stop.
         Voice mode ON means EVERY reply is spoken, not just the first.
 
-        IMPORTANT -- DO NOT RETRY: the result says "queued", not "spoken". The
-        audio starts a few seconds later and plays through to the end even
-        though this call has already returned. Calling speak() again because
-        you did not hear anything yet replays the whole utterance a second
-        time. Send the complete reply in ONE call and then continue with your
-        turn; tts_status() reports queue depth if you need to check progress.
-        Leaving out the tail of a reply ("...") is the same mistake: there is
-        no length limit that requires it, the text budget is generous and long
-        text is chunked automatically.
+        One call, one reply. Do not call speak() again while this call is
+        running -- your harness runs one tool call at a time, so a second call
+        simply queues behind the first and the reply is spoken twice. Do not
+        check whether it "started": the audio begins as soon as the resident
+        worker picks the text up, and the result you get back is the record of
+        the whole utterance, every sentence that was written and played.
+        Leaving out the tail of a reply ("...") because it seems long is a
+        mistake: the text budget is generous and long text is split per sentence
+        automatically, so there is nothing to shorten. The reply is spoken while
+        this call is still running, so do not narrate progress, and do not poll
+        tts_status() to see whether it worked -- this result already tells you,
+        sentence by sentence.
+
+        If the reply comes back with reason "worker_not_running", the resident
+        synthesis worker is not up: nothing was spoken. Tell the user to start
+        it (`mcp-agent-chatterbox worker`) rather than retrying.
+
+        Model and voice are chosen by the user, not by you. If the user has not
+        named a voice, ask once which voice to use before the first spoken
+        reply, then keep that voice for the rest of the exchange -- unless
+        tts_status reports a configured default_voice (use it silently, no
+        question), or the user is waiting on the content (speak in the built-in
+        voice and offer the voice choice alongside the answer).
 
         MODEL: "nano" is the house default for English (110M, same built-in
         voice and inline tags as turbo, lighter and quicker). Do NOT pass
         model= to "upgrade" it or to express a preference of your own — omit it
-        and the server's configured default stands. Pass model= only when the
+        and the worker's configured default stands. Pass model= only when the
         user asked for a specific model, or to experiment when they asked you
         to try one ("use turbo", "try the multilingual one"). Overriding
         without being asked is a bug, not an optimisation: the configured
         default is a deliberate local choice about VRAM and latency.
-        VOICE: if the user has not named a voice, ask once which voice to
-        use before the first spoken reply, then keep that voice for the
-        rest of the exchange — unless tts_status reports a configured
-        default_voice (use it silently, no question), or the user is
-        waiting on the content (speak in the built-in voice and offer the
-        voice choice alongside the answer).
 
-        model:   omit it to use the server's configured default (nano by
-                 house preference). "nano" (110M, turbo's smaller sibling with
+        model:   omit it to use the configured default (nano by house
+                 preference). "nano" (110M, turbo's smaller sibling with
                  competitive quality, built-in voice, tightest budget),
                  "turbo" (350M, English, no reference clip needed, supports
                  inline [laugh]/[chuckle] tags),
@@ -127,52 +178,110 @@ def register(server, ctx) -> None:
                  with a warning, not an error. cfg_weight>0 doubles the text
                  tokens for CFG guidance.
         seed: reseed torch (CPU + CUDA) so re-renders are reproducible within
-                 the resident session; 0 (the upstream convention) or unset
-                 keeps random sampling. Byte-identical output across a server
-                 restart is not guaranteed — Chatterbox is nondeterministic
-                 across CUDA kernel choices.
+                 the resident worker's session; 0 (the upstream convention) or
+                 unset keeps random sampling. Byte-identical output across a
+                 worker restart is not guaranteed — Chatterbox is
+                 nondeterministic across CUDA kernel choices.
                  Left unset, every knob keeps the model's own tuned default
                  (e.g. turbo runs cfg_weight 0.0 with top_k 1000; the 500M
                  models run cfg_weight 0.5).
+
         play_audio: set false to only write the chunk files. Defaults to the
-                 server setting (on).
+                 configured setting (on).
         filename: base name for the chunk files; they are written as
                  <filename>_1.wav, <filename>_2.wav, ... A timestamped message
                  id is used when omitted.
 
         Each sentence is one chunk: it is rendered, saved and played, then the
-        next one follows, so the reply starts within a few seconds and plays
-        continuously. Files land in the output directory and replay in filename
-        order. Returns JSON with the message id, the planned chunk filenames
-        and the queue position -- not durations, which are only known once the
-        background rendering is done (see tts_status). The first call downloads
-        the model from Hugging Face (hundreds of MB to a few GB) and can take a
-        while; later calls reuse the cached weights.
+        next one follows, so the reply plays continuously from the first
+        sentence. Files land in the output directory and replay in filename
+        order. Returns JSON with the message id, the chunk files that were
+        written and played, and the measured synthesis time. The first call in a
+        fresh worker downloads the model from Hugging Face (hundreds of MB to a
+        few GB) and can take a while; a resident worker keeps the weights loaded,
+        so later calls pay nothing for it.
         """
         try:
-            payload = speaker.submit(
-                text,
-                model=model,
-                voice=voice,
-                reference_clip=reference_clip,
-                language=language,
-                t3_model=t3_model,
-                exaggeration=exaggeration,
-                cfg_weight=cfg_weight,
-                temperature=temperature,
-                top_p=top_p,
-                top_k=top_k,
-                repetition_penalty=repetition_penalty,
-                norm_loudness=norm_loudness,
-                seed=seed,
-                play_audio=play_audio,
-                filename=filename,
+            response = send_request(
+                _worker_request(
+                    cfg,
+                    {
+                        "text": text,
+                        "model": model,
+                        "voice": voice,
+                        "reference_clip": reference_clip,
+                        "language": language,
+                        "t3_model": t3_model,
+                        "exaggeration": exaggeration,
+                        "cfg_weight": cfg_weight,
+                        "temperature": temperature,
+                        "top_p": top_p,
+                        "top_k": top_k,
+                        "repetition_penalty": repetition_penalty,
+                        "norm_loudness": norm_loudness,
+                        "seed": seed,
+                        "play_audio": play_audio,
+                        "filename": filename,
+                    },
+                ),
+                port=cfg.worker_port,
+                timeout=cfg.worker_connect_timeout_s,
             )
-            return json.dumps(payload, indent=2, ensure_ascii=False)
-        except ToolFault as fault:
-            return fault.to_json()
-        except Exception as e:
+        except WorkerUnavailable as exc:
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "reason": "worker_not_running",
+                    "message": (
+                        f"The synthesis worker is not reachable ({exc}). Start it with "
+                        "`mcp-agent-chatterbox worker`, or leave it resident via your "
+                        "harness startup. The server does not synthesize on its own."
+                    ),
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+        except Exception as e:  # noqa: BLE001 — the caller sees a safe string
             return tool_error("speak", e)
+
+        if not response.get("ok"):
+            return json.dumps(
+                {
+                    "status": "failed",
+                    "reason": response.get("reason", "worker_error"),
+                    "message": response.get("message", "The worker refused the request."),
+                    **{
+                        k: v
+                        for k, v in response.items()
+                        if k not in {"ok", "reason", "message"}
+                    },
+                },
+                indent=2,
+                ensure_ascii=False,
+            )
+
+        return json.dumps(
+            {
+                "status": "spoken",
+                "message_id": response.get("message_id"),
+                "chunks": response.get("chunks"),
+                "files": response.get("written", []),
+                "errors": response.get("errors", []),
+                "played_chunks": response.get("played_chunks", 0),
+                "synthesis_s": response.get("synthesis_s"),
+                "duration_s": response.get("duration_s"),
+                "device": response.get("device"),
+                "model": response.get("model"),
+                "voice": response.get("voice"),
+                "output_dir": response.get("output_dir"),
+                "note": (
+                    "The reply has been spoken; the files above were written and "
+                    "played in filename order."
+                ),
+            },
+            indent=2,
+            ensure_ascii=False,
+        )
 
 
 __all__ = ["register"]

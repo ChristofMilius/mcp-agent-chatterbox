@@ -3,9 +3,13 @@ cli.py — command-line interface
 ==============================
 Subcommands:
   serve    Run the MCP server (default). --http switches to streamable-http.
+           The server does not synthesize; it forwards to the resident worker.
+  worker   Run the resident synthesis worker. Start this once, before the
+           first spoken reply, and leave it running.
   doctor   Offline diagnostics (paths, torch/CUDA, per-GPU VRAM, voices).
   speak    Synthesize one utterance from the shell — the same code path the
-           MCP tool uses, so it is the fastest way to check a fresh install.
+           resident worker uses, so it is the fastest way to check a fresh
+           install.
 
 The CLI is the operator console, not the model-facing surface; output only
 reports paths/state, no secrets.
@@ -15,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from pathlib import Path
 
 from mcp_agent_chatterbox import __version__
 
@@ -27,6 +32,61 @@ def _cmd_serve(args) -> int:
         run(transport=transport, host=args.host, port=args.port)
     except KeyboardInterrupt:
         pass
+    return 0
+
+
+def _cmd_worker(args) -> int:
+    from mcp_agent_chatterbox.config import Config
+    from mcp_agent_chatterbox.logging_setup import setup_logging
+    from mcp_agent_chatterbox.worker import serve
+
+    cfg = Config()
+    setup_logging(str(cfg.logs_dir))
+    port = args.port if args.port is not None else cfg.worker_port
+    print(f"chatterbox worker listening on 127.0.0.1:{port} (Ctrl+C to stop)")
+    print(f"  model   : {cfg.model}")
+    print(f"  voice   : {cfg.voice or '(model default)'}")
+    print(f"  output  : {cfg.output_dir}")
+    sys.stdout.flush()
+    try:
+        return serve(cfg, port=port, host="127.0.0.1")
+    except KeyboardInterrupt:
+        return 0
+
+
+def _cmd_worker_status(args) -> int:
+    """Report whether a worker is up, and what it is doing."""
+    from mcp_agent_chatterbox.config import Config
+    from mcp_agent_chatterbox.worker import WorkerUnavailable, send_request
+
+    cfg = Config()
+    port = args.port if args.port is not None else cfg.worker_port
+    try:
+        response = send_request({"op": "status"}, port=port, timeout=cfg.worker_connect_timeout_s)
+    except WorkerUnavailable as exc:
+        print(f"no worker on 127.0.0.1:{port} ({exc})")
+        print("Start one with: mcp-agent-chatterbox worker")
+        return 1
+    print(f"worker on 127.0.0.1:{port}: {response.get('status', 'unknown')}")
+    last = response.get("last")
+    if last:
+        print(f"  last    : {last.get('message_id')} ({len(last.get('written', []))} file(s))")
+    return 0 if response.get("ok") else 1
+
+
+def _cmd_worker_stop(args) -> int:
+    """Ask the resident worker to drain its queue and exit."""
+    from mcp_agent_chatterbox.config import Config
+    from mcp_agent_chatterbox.worker import WorkerUnavailable, send_request
+
+    cfg = Config()
+    port = args.port if args.port is not None else cfg.worker_port
+    try:
+        response = send_request({"op": "shutdown"}, port=port, timeout=cfg.worker_connect_timeout_s)
+    except WorkerUnavailable as exc:
+        print(f"no worker on 127.0.0.1:{port} ({exc})")
+        return 1
+    print(f"worker on 127.0.0.1:{port}: {response.get('status')} (finishing the queue first)")
     return 0
 
 
@@ -59,6 +119,7 @@ def _cmd_doctor(args) -> int:
     print(f"    max chars    : {cfg.max_chars}")
     print(f"    chunk size   : {cfg.max_chunk_chars} chars")
     print(f"    chunk pause  : {cfg.chunk_pause_ms} ms")
+    print(f"    worker port  : {cfg.worker_port} (server forwards speak() here)")
 
     engine = ChatterboxEngine(cfg)
     status = engine.status()
@@ -196,6 +257,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_doc = sub.add_parser("doctor", help="Diagnose configuration, CUDA and voices.")
     p_doc.set_defaults(func=_cmd_doctor)
 
+    p_worker = sub.add_parser(
+        "worker", help="Run the resident synthesis worker (start this first)."
+    )
+    p_worker.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Loopback port to listen on (default: CHATTERBOX_WORKER_PORT).",
+    )
+    p_worker.set_defaults(func=_cmd_worker)
+
+    p_wstatus = sub.add_parser(
+        "worker-status", help="Report whether the resident worker is up."
+    )
+    p_wstatus.add_argument("--port", type=int, default=None)
+    p_wstatus.set_defaults(func=_cmd_worker_status)
+
+    p_wstop = sub.add_parser(
+        "worker-stop", help="Ask the resident worker to drain its queue and exit."
+    )
+    p_wstop.add_argument("--port", type=int, default=None)
+    p_wstop.set_defaults(func=_cmd_worker_stop)
+
     p_speak = sub.add_parser("speak", help="Synthesize one utterance and save/play it.")
     p_speak.add_argument("text", help="Text to speak.")
     p_speak.add_argument("--model", default=None, help="turbo | multilingual | original")
@@ -253,7 +337,19 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The module path is prepended so this file is runnable on its own
+    # (`python <...>/cli.py worker`), which is how worker.spawn() starts a
+    # worker without depending on the console script being on PATH.
+    _HERE = Path(__file__).resolve().parent
+    if str(_HERE) not in sys.path:
+        sys.path.insert(0, str(_HERE))
+
+    # Imported before anything else can: the console-script entry point has
+    # already imported the package by now, but a direct run of this file has
+    # not, and the relative imports below would fail without it.
+    from mcp_agent_chatterbox.cli import main as _main
+
+    sys.exit(_main())
 
 
 __all__ = ["build_parser", "main"]

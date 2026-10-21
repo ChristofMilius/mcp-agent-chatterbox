@@ -390,6 +390,77 @@ class TestPlayback:
         assert last["errors"] == ["chunk 1: no audio device"]
 
 
+class TestWorkerLifecycle:
+    """
+    The worker is non-daemon so real speech survives a per-turn harness, which
+    means it must be stoppable or the interpreter never exits. These cover the
+    stop/drain contract that keeps that true.
+    """
+
+    def test_worker_is_not_a_daemon(self, cfg, fake_engine):
+        # The whole point: a daemon thread is destroyed with the process, which
+        # is what silently discarded queued speech when a client hung up.
+        speaker = Speaker(cfg, fake_engine)
+        speaker.submit("One.")
+        assert speaker.wait(timeout=10)
+        worker = speaker._worker
+        assert worker is not None and not worker.daemon
+
+    def test_stop_worker_ends_the_thread(self, cfg, fake_engine):
+        speaker = Speaker(cfg, fake_engine)
+        speaker.submit("One.")
+        assert speaker.wait(timeout=10)
+        speaker.stop_worker()
+        worker = speaker._worker
+        assert worker is None or not worker.is_alive()
+
+    def test_stop_worker_is_safe_when_nothing_started(self, cfg, fake_engine):
+        speaker = Speaker(cfg, fake_engine)
+        speaker.stop_worker()  # no worker was ever created
+        speaker.stop_worker()  # and calling twice is fine
+
+    def test_stop_worker_leaves_no_live_thread(self, cfg, fake_engine):
+        speaker = Speaker(cfg, fake_engine)
+        speaker.submit("One.")
+        assert speaker.wait(timeout=10)
+        speaker.stop_worker()
+        # Only the main thread may remain; a leaked worker would hang exit.
+        names = {t.name for t in threading.enumerate()}
+        assert "chatterbox-speaker" not in names
+
+    def test_drain_waits_for_queued_work(self, cfg, fake_engine):
+        speaker = Speaker(cfg, fake_engine)
+        payload = speaker.submit("One. Two. Three.")
+        assert speaker.drain(timeout=10) is None  # returns None, blocks
+        written = speaker.status()["last"]["written"]
+        assert len(written) == payload["chunks"]
+        speaker.stop_worker()
+
+    def test_drain_times_out_without_hanging(self, cfg):
+        # A wedged engine must not pin the process: drain has to give up at the
+        # bound AND stop the worker, otherwise this is a hang instead of a loss.
+        engine = BlockingEngine()
+        speaker = Speaker(cfg, engine)
+        speaker.submit("One.")
+        assert engine.entered.wait(timeout=10)
+        speaker.drain(timeout=0.2)
+        engine.gate.set()
+        worker = speaker._worker
+        assert worker is None or not worker.is_alive()
+
+    def test_stop_survives_a_shutdown_sentinel_in_the_queue(self, cfg, fake_engine):
+        # stop() walks the queue with get_nowait(); the None sentinel drain()
+        # puts there is not a job and must not be counted or cancelled.
+        speaker = Speaker(cfg, fake_engine)
+        speaker.submit("One.")
+        assert speaker.wait(timeout=10)
+        speaker._queue.put(None)
+        state = speaker.stop()
+        assert state["cancelled_jobs"] == 0
+        assert state["cancelled_ids"] == []
+        speaker.stop_worker()
+
+
 class TestQueue:
     LONG = "Alpha red green blue. Beta yellow orange purple. Gamma pink black white."
 

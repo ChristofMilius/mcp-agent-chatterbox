@@ -17,10 +17,19 @@ from mcp_agent_chatterbox.registry import VOICE_SUFFIXES, describe_models
 # Aliased: the MCP tool below is itself called list_voices, and an unaliased
 # import would be shadowed by it.
 from mcp_agent_chatterbox.voices import list_voices as _scan_voices
+from mcp_agent_chatterbox.worker import WorkerUnavailable, send_request
 
 
 def register(server, ctx) -> None:
     voices_dir = ctx.cfg.voices_dir
+    cfg = ctx.cfg
+
+    def _worker(op: str) -> tuple[dict | None, str | None]:
+        """Ask the worker. Returns (response, problem-description)."""
+        try:
+            return send_request({"op": op}, port=cfg.worker_port, timeout=cfg.worker_connect_timeout_s), None
+        except WorkerUnavailable as exc:
+            return None, str(exc)
 
     @server.tool()
     def list_voices() -> str:
@@ -71,14 +80,21 @@ def register(server, ctx) -> None:
         so a long reply does not resume a moment after it was interrupted.
         """
         try:
-            state = ctx.speaker.stop()
-            return json.dumps(
-                {
-                    "status": "ok" if state["stopped"] or state["cancelled_jobs"] else "idle",
-                    **state,
-                },
-                indent=2,
-            )
+            response, problem = _worker("stop")
+            if response is None:
+                return json.dumps(
+                    {
+                        "status": "failed",
+                        "reason": "worker_not_running",
+                        "message": (
+                            f"No synthesis worker is listening on port {cfg.worker_port} "
+                            f"({problem}), so nothing is speaking."
+                        ),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            return json.dumps({"status": "ok", **response}, indent=2, ensure_ascii=False)
         except Exception as e:
             return tool_error("stop_speech", e)
 

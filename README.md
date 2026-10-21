@@ -5,13 +5,50 @@ MCP server for local, GPU-accelerated text-to-speech with
 Text goes in, spoken audio comes out — no cloud service, no API key, no
 per-character cost.
 
-Ships two things:
+Ships three things:
 
+- **A resident synthesis worker** that holds the model, renders sentence by
+  sentence and plays as it goes. Start it once and leave it running.
 - **An MCP tool surface** (`speak`, `tts_status`, `tts_unload`, `list_voices`,
-  `stop_speech`) that any MCP client can call.
+  `stop_speech`) that any MCP client can call. It forwards `speak` to the worker.
 - **An opencode plugin** (`.opencode/plugins/tts.js`) that adds a `speak` tool
   and a `/speak` command to opencode itself, and installs itself globally so
   it works in every project, not just this repo.
+
+## Start the worker first
+
+The MCP server does not synthesize. It hands the text to a separate, long-lived
+worker process and waits for the result.
+
+```bash
+mcp-agent-chatterbox worker          # start it, leave it running
+mcp-agent-chatterbox worker-status   # is it up? what is it doing?
+mcp-agent-chatterbox worker-stop     # finish the queue, then exit
+```
+
+**Why a separate process.** Synthesis used to happen inside the MCP server, and
+inside that process it reliably stopped after two sentences and never resumed.
+The same code outside a server finished the whole reply every time. It failed
+identically over stdio and over HTTP, so it was not the transport; and it failed
+with the client's pipe held open and closed early, so it was not the shutdown
+path. The measurement, for the record, on the same six sentences:
+
+| where the synthesis ran | result |
+|---|---|
+| inside the MCP server process (stdio) | 2 of 6 sentences, then nothing for 300s+ |
+| inside the MCP server process (HTTP) | 2 of 6 sentences, then nothing |
+| in a plain process, same code | 6 of 6, ~32s |
+| **server forwarding to the worker** | **6 of 6, ~34s** |
+
+The second problem was lifetime. The server dies when its client's turn ends, so
+a reply longer than the turn was killed mid-sentence no matter how the queue was
+drained. A resident worker outlives any turn, and keeps the model loaded, so
+successive replies pay nothing for the load.
+
+`speak` therefore blocks until the reply has been spoken. That is deliberate —
+the tool result is a record of what was actually written and played, not a
+promise to write something later. The audio is played by the worker, so it keeps
+playing regardless of what the harness does with the server process.
 
 ## The four models
 
@@ -388,9 +425,12 @@ Speaking stays an explicit choice, by tool call or by `/speak`.
 
 ### `speak`
 
-The main call. Accepts text and returns immediately; a background worker renders
-it one sentence at a time, writes `<message_id>_<n>.wav` files and plays each as
-it lands.
+The main call. Accepts text, hands it to the resident worker, and returns once
+the whole reply has been spoken. The worker renders it one sentence at a time,
+writes `<message_id>_<n>.wav` files and plays each as it lands.
+
+If no worker is running it returns `worker_not_running` with the command to
+start one. It never falls back to synthesizing in the server process.
 
 | Parameter | Default | Meaning |
 |---|---|---|
@@ -425,12 +465,15 @@ longer than `CHATTERBOX_MAX_CHUNK_CHARS` is split further on word boundaries.
 The chunks share the same voice, style knobs and reference clip, and are played
 with `CHATTERBOX_CHUNK_PAUSE_MS` of silence between them.
 
-The call returns as soon as the text is accepted — it reports the message id,
-the planned chunk filenames and the queue position, not durations. A daemon
-worker then renders and plays the chunks in order, so the first sentence is
-audible within seconds and the rest follow continuously. Files stay on disk and
-replay in filename order; there is no stitched final file. `stop_speech` cuts
-the current sentence and cancels everything still queued.
+The call returns when the reply has been spoken — it reports the message id, the
+chunk files that were written and played, and the measured synthesis and audio
+durations. The worker renders one chunk at a time and plays each as it lands, so
+the first sentence is audible within seconds and the rest follow continuously.
+Files stay on disk and replay in filename order; there is no stitched final file.
+`stop_speech` cuts the current sentence and cancels everything still queued.
+
+Because the audio belongs to the worker, it keeps playing even if the MCP server
+process goes away when the turn ends.
 
 ```jsonc
 // a quick aside in the stock voice
@@ -446,16 +489,21 @@ the current sentence and cancels everything still queued.
 
 ### `tts_status`
 
-Runtime readiness without loading anything: packages, torch/CUDA versions,
-resolved device, free VRAM per GPU, resident model, available models, the
-configured default voice (`CHATTERBOX_VOICE`), the multilingual language
-list, and the tags turbo understands. Use it as a preflight.
+Readiness without loading anything: whether the worker is running, the models
+available, the configured default voice (`CHATTERBOX_VOICE`), the multilingual
+language list, and the tags turbo understands. When the worker is up it also
+reports its resolved device, free VRAM per GPU and the speech queue. When it is
+down, `worker_running` is `false` and `worker_note` says what to do — the rest of
+the response is still accurate, which is what you want when the missing piece is
+the worker itself.
 
 ### `tts_unload`
 
-Releases the resident model and returns its VRAM. Needed when another process
-wants the card. Only one model is resident at a time — asking for a different
-one evicts the previous automatically — but this frees it entirely.
+Asks the worker to release the resident model and return its VRAM. Needed when
+another process wants the card. Only one model is resident at a time — asking
+for a different one evicts the previous automatically — but this frees it
+entirely. With no worker running there is nothing to release, and the reply says
+so rather than pretending it worked.
 
 ### `list_voices`
 
@@ -489,7 +537,8 @@ it to `requires_reference_clip`.
 
 ### `stop_speech`
 
-Cuts off the sentence that is playing and cancels every utterance still queued.
+Asks the worker to cut off the sentence that is playing and cancel every
+utterance still queued.
 
 ## Voice cloning
 
@@ -559,6 +608,12 @@ is what predicted quality here.
 ## CLI
 
 ```bash
+# the synthesis worker: start this once, leave it running
+uv run mcp-agent-chatterbox worker
+uv run mcp-agent-chatterbox worker --port 8765
+uv run mcp-agent-chatterbox worker-status
+uv run mcp-agent-chatterbox worker-stop
+
 # diagnostics: device, per-GPU VRAM, models, voices
 uv run mcp-agent-chatterbox doctor
 
@@ -571,9 +626,10 @@ uv run mcp-agent-chatterbox speak "..." --no-play
 uv run mcp-agent-chatterbox serve
 ```
 
-The CLI `speak` subcommand shares its code path with the MCP tool
-(`mcp_agent_chatterbox.speak.Speaker`) and blocks until the queue is drained, so
-it is the fastest way to check a fresh install.
+`worker` runs the resident process in the foreground; it loads the model on the
+first utterance and keeps it loaded. `speak` shares the same code path and blocks
+until the queue is drained, so it is the fastest way to check a fresh install
+without involving MCP at all.
 
 ## Web surface (HTTP transport)
 
@@ -671,6 +727,8 @@ No secrets are involved.
 | `CHATTERBOX_MAX_CHARS` | `4000` | Reject longer single requests |
 | `CHATTERBOX_MAX_CHUNK_CHARS` | `500` | Hard cap for one sentence; longer sentences are split on word boundaries |
 | `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence between played chunks |
+| `CHATTERBOX_WORKER_PORT` | `8765` | Loopback port the worker listens on. The server and the worker read this same value; point them at different ones and `speak` reports `worker_not_running` while a healthy worker sits on the other port |
+| `CHATTERBOX_WORKER_CONNECT_TIMEOUT` | `5` | Seconds to wait for the **connection** to the worker. Bounds the connect only, never the reply — rendering takes as long as the speech takes, and cutting the read off would abandon audio that is still being spoken |
 | `CHATTERBOX_VRAM_MB` | `4096` | Free-VRAM floor for a load attempt |
 | `CHATTERBOX_STRICT_VRAM` | `0` | `1` refuses a load below the floor instead of warning |
 | `CHATTERBOX_HF_HOME` | unset | Where the Hugging Face cache lives. Does not compete with `HF_HOME` — it **sets** it, at load time, before `huggingface_hub` seals the value on import. Set it in `.env` so the cache root cannot be lost to a harness that does not forward your environment. See [Model weights](#model-weights) |
@@ -697,6 +755,17 @@ box where LM Studio holds both GPUs, `doctor` shows the headroom per card and
 
 ## Design notes
 
+**Synthesis lives in its own process, and that is not incidental.** The server
+used to render in-process and reliably stalled after two sentences — over both
+transports, with the client pipe open and closed. A plain process running the
+same code finished the reply. So the worker owns the model and the playback; the
+server owns the protocol and carries text across a loopback socket. Requests are
+one JSON line each way, one request per connection, and the worker is strictly
+single-threaded: one GPU, one resident model, and a Chatterbox model instance
+carries mutable state. Nothing may end that loop — a handler exception is logged
+and returned as `worker_error` rather than allowed to kill a resident process
+that the next utterance also depends on.
+
 **A card that cannot be queried is skipped, not fatal.** If
 `torch.cuda.mem_get_info()` throws for every ordinal — a driver that has not
 finished initialising, a card held by another process — `auto` falls back to
@@ -709,14 +778,17 @@ multilingual model do not both fit on a 12 GB card that already has an LLM
 resident. Asking for a different model evicts the previous one and empties the
 CUDA allocator cache.
 
-**The engine is locked; the status reads are not.** `load()`, `unload()` and
-`synthesize()` serialise behind one re-entrant lock, because the model cache is
-process-global and a single model instance is not safe to call `generate()` on
-from two threads. `tts_status`, `gpu_report` and `free_vram_mb()` deliberately
-take no lock, so a ten-second cold weight load never stalls a diagnostic call —
-which is the call you need while staring at a slow first request. The lock is
-invisible over stdio and is the difference between working and OOM-ing over
-HTTP; the reasoning and the measured numbers are in the web-surface section.
+**The engine is locked; the status reads are not.** Inside the worker,
+`load()`, `unload()` and `synthesize()` serialise behind one re-entrant lock,
+because the model cache is process-global and a single model instance is not safe
+to call `generate()` on from two threads. The worker's accept loop is
+single-threaded on top of that, so only one speak is ever in flight. `tts_status`,
+`gpu_report` and `free_vram_mb()` deliberately take no lock, so a ten-second cold
+weight load never stalls a diagnostic call — which is the call you need while
+staring at a slow first request. The lock matters for HTTP, where the engine
+would otherwise be reached concurrently; it was the difference between working
+and OOM-ing there. The reasoning and the measured numbers are in the web-surface
+section.
 
 **The device string goes straight to `from_pretrained()`.** Chatterbox's own
 `.to(device)` is incomplete upstream: in `ChatterboxTTS` and
@@ -735,8 +807,10 @@ The engine queries free VRAM first, warns (or refuses under
 `CHATTERBOX_STRICT_VRAM`), and maps a genuine OOM onto an actionable
 `cuda_out_of_memory` payload.
 
-**Weights are never loaded at startup.** A status or voice-listing call must
-not pay the multi-second torch import plus a multi-gigabyte fetch.
+**Weights are never loaded at startup.** The server builds no engine at all, and
+a status or voice-listing call must not pay the multi-second torch import plus a
+multi-gigabyte fetch. The worker, which is started deliberately and lives for
+hours, loads the model on its first utterance and keeps it resident.
 
 ## Troubleshooting
 
@@ -761,11 +835,18 @@ registration for `CHATTERBOX_HF_HOME` and look for a second copy under
 [Model weights](#model-weights) for why `HF_HOME` in your shell is not always
 enough.
 
-**Audio does not come out.** Check `tts_status` -> `speech`: `pending` above
-zero means the queue is still working, and `last` carries `written`,
+**Audio does not come out.** First check the worker is up: `tts_status` ->
+`worker_running`, or `mcp-agent-chatterbox worker-status`. If it is down, start
+it (`mcp-agent-chatterbox worker`) and try again — the server never synthesizes
+on its own. With a worker running, `tts_status` -> `worker` shows the queue:
+`pending` above zero means it is still rendering, and `last` carries `written`,
 `played_chunks` and `errors` for the most recent utterance. Playback needs
 Windows; on other platforms the chunk files are still written. `stop_speech`
 clears anything queued.
+
+**`worker_not_running`.** Nothing is listening on `CHATTERBOX_WORKER_PORT`. The
+MCP server does not synthesize; it only forwards. Start the worker once and leave
+it running. Double-check both sides read the same port value.
 
 **`turbo` and the watermarker.** Turbo's output carries Resemble AI's
 watermarking mark, added by the vendored Perth library. Turning it off would be
