@@ -128,6 +128,16 @@ def register(server, ctx) -> None:
         from you. Once the utterance has finished, tts_status() carries its
         record (chunk files, played counts, timings, errors) under worker.last.
 
+        After the acceptance result, your harness still wants a final chat
+        message: close the turn by writing out the EXACT text you passed into
+        text= -- word for word, same punctuation, with only the paralinguistic
+        tags ([laugh], [chuckle], [sigh], ...) removed. The chat message is
+        the transcript of what was spoken, not a second reply. Do not tidy,
+        shorten, rephrase or expand it, and do not append commentary about the
+        call: when the written version drifts from the spoken one, the user
+        reads and hears two different replies, which is precisely the failure
+        this instruction exists to prevent.
+
         If the reply comes back with reason "worker_not_running", the resident
         synthesis worker is not up: nothing was spoken. Tell the user to start
         it (`mcp-agent-chatterbox worker`) rather than retrying.
