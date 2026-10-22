@@ -50,18 +50,16 @@ class ScriptedWorker:
         self.requests: list[dict] = []
         self.speak_response = speak or {
             "ok": True,
-            "status": "done",
+            "status": "queued",
             "message_id": "1700000000000",
+            "text_chars": 5,
             "chunks": 2,
-            "written": ["1700000000000_1.wav", "1700000000000_2.wav"],
-            "errors": [],
-            "played_chunks": 2,
-            "synthesis_s": 1.5,
-            "duration_s": 3.0,
-            "device": "cuda:1",
-            "output_dir": "/tmp/out",
+            "files": ["1700000000000_1.wav", "1700000000000_2.wav"],
+            "play": True,
             "model": "nano",
             "voice": "narrator",
+            "queued_ahead": 0,
+            "output_dir": "/tmp/out",
         }
 
     def __call__(self, request: dict) -> tuple[dict, bool]:
@@ -132,14 +130,20 @@ def _body(raw: str) -> dict:
 
 
 class TestSpeakForwardsToTheWorker:
-    def test_the_reply_is_reported_as_spoken(self, tools, worker):
+    def test_the_reply_is_reported_as_accepted_not_spoken(self, tools, worker):
+        # Fire and forget: the tool result must NOT promise the record of a
+        # played utterance, because it answers before playback finishes. A
+        # result shaped like "spoken" would teach the model to rely on fields
+        # (played_chunks, errors) that cannot exist yet.
         body = _body(tools["speak"](text="Line one. Line two."))
 
-        assert body["status"] == "spoken"
+        assert body["status"] == "accepted"
+        assert body["status"] != "spoken"
         assert body["message_id"] == "1700000000000"
         assert body["files"] == ["1700000000000_1.wav", "1700000000000_2.wav"]
-        assert body["played_chunks"] == 2
-        assert body["synthesis_s"] == 1.5
+        assert body["play"] is True
+        assert "played_chunks" not in body
+        assert "errors" not in body
 
     def test_the_text_and_set_knobs_reach_the_worker(self, tools, worker):
         tools["speak"](text="Grüße.", voice="narrator", play_audio=False, top_k=1000)

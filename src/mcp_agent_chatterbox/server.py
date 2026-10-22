@@ -60,8 +60,10 @@ Workflow:
   3. list_voices() -> the reference clips you can clone from, if you need one.
   4. speak(text, model=..., voice=..., language=...) -> hands the text to the
      worker, which renders chunk by chunk (up to CHATTERBOX_SENTENCES_PER_CHUNK
-     sentences each) and plays it as soon as it is
-     written. The call returns when the whole reply has been spoken.
+     sentences each) and plays each one as soon as it is written. The call
+     returns as soon as the text is accepted; playback continues in the
+     resident worker even if the harness kills this tool call (LM Studio's
+     tool-call timeout cannot cut speech off).
   5. tts_unload() -> hand the GPU back when another process needs it. Only one
      model stays resident at a time; asking for a different one evicts the
      previous automatically.

@@ -2,7 +2,8 @@
 speak_tools — the main MCP call
 ===============================
 speak: accept text for speech and hand it to the resident synthesis worker.
-       Talks to worker.py over loopback; returns once the reply has been spoken.
+       Talks to worker.py over loopback, and answers the moment the worker has
+       accepted the text — the reply then plays out in the worker.
 
 The MCP server does NOT synthesize. It used to, and it was unreliable: inside
 the server process rendering stopped after two sentences and never resumed,
@@ -10,10 +11,15 @@ while the same code driven from a plain script finished every sentence (see
 worker.py for the full measurement). The server's job now is to carry text to
 the process that does this reliably.
 
-Because it waits, speak() takes as long as the reply takes to be spoken. That is
-the point: the worker is resident, so the audio plays in real time regardless of
-what the harness does with this process, and the tool result is an honest
-account of what was written rather than a promise to write something later.
+speak() does not wait for the utterance to finish. It used to — the tool
+result was an honest, sentence-by-sentence account of what was written and
+played — but a blocking result holds the caller's tool call open for the
+entire spoken duration, and a harness with a tool-call timeout (LM Studio)
+aborts such a call long before a long reply finishes, cutting the turn off
+with audio still playing. Returning on acceptance makes the tool independent
+of any client timeout: the worker being resident is what keeps the audio
+playing regardless of what the harness does with this process. The finished
+record is served afterwards by tts_status under worker.last.
 
 Model selection:
   * model="turbo" (default) speaks with no reference clip and understands
@@ -107,18 +113,20 @@ def register(server, ctx) -> None:
         speak stays in effect for the whole exchange until the user says stop.
         Voice mode ON means EVERY reply is spoken, not just the first.
 
-        One call, one reply. Do not call speak() again while this call is
-        running -- your harness runs one tool call at a time, so a second call
-        simply queues behind the first and the reply is spoken twice. Do not
-        check whether it "started": the audio begins as soon as the resident
-        worker picks the text up, and the result you get back is the record of
-        the whole utterance, every sentence that was written and played.
-        Leaving out the tail of a reply ("...") because it seems long is a
-        mistake: the text budget is generous and long text is split per sentence
-        automatically, so there is nothing to shorten. The reply is spoken while
-        this call is still running, so do not narrate progress, and do not poll
-        tts_status() to see whether it worked -- this result already tells you,
-        sentence by sentence.
+        One call, one reply. Do not call speak() again while the audio for the
+        previous call is still playing -- your harness runs one tool call at a
+        time, so a second call queues behind the first and would be spoken
+        again. Leaving out the tail of a reply ("...") because it seems long is
+        a mistake: the text budget is generous and long text is split per
+        sentence automatically, so there is nothing to shorten.
+
+        This call returns the moment the resident worker ACCEPTS the text, not
+        when the reply finishes playing; synthesis and playback then continue
+        in the worker, untouched by any harness tool-call timeout. Do not
+        narrate progress and do not poll tts_status() while playback is
+        running -- the audio is the deliverable to the user and needs nothing
+        from you. Once the utterance has finished, tts_status() carries its
+        record (chunk files, played counts, timings, errors) under worker.last.
 
         If the reply comes back with reason "worker_not_running", the resident
         synthesis worker is not up: nothing was spoken. Tell the user to start
@@ -198,12 +206,12 @@ def register(server, ctx) -> None:
         are played in order from a small render-ahead buffer, so the reply plays
         continuously from the first sentence instead of pausing for a fresh
         synthesis at every boundary. Files land in the output directory and replay
-        in filename order. Returns JSON with the message id, the chunk files that
-        were written and played, the measured synthesis time, `first_audio_s` and
-        `max_gap_s` (the worst silence the player could not avoid). The first call
-        in a fresh worker downloads the model from Hugging Face (hundreds of MB to
-        a few GB) and can take a while; a resident worker keeps the weights loaded,
-        so later calls pay nothing for it.
+        in filename order. Returns JSON with the message id, the chunk count, the
+        file paths the chunks will be written to, and how many utterances are
+        queued ahead. The FIRST call in a fresh worker downloads the model from
+        Hugging Face (hundreds of MB to a few GB) and can take a while before the
+        first audio; a resident worker keeps the weights loaded, so later calls
+        pay nothing for it.
         """
         try:
             response = send_request(
@@ -266,23 +274,21 @@ def register(server, ctx) -> None:
 
         return json.dumps(
             {
-                "status": "spoken",
+                "status": "accepted",
                 "message_id": response.get("message_id"),
                 "chunks": response.get("chunks"),
-                "files": response.get("written", []),
-                "errors": response.get("errors", []),
-                "played_chunks": response.get("played_chunks", 0),
-                "synthesis_s": response.get("synthesis_s"),
-                "duration_s": response.get("duration_s"),
-                "first_audio_s": response.get("first_audio_s"),
-                "max_gap_s": response.get("max_gap_s"),
-                "device": response.get("device"),
+                "text_chars": response.get("text_chars"),
+                "files": response.get("files", []),
+                "play": response.get("play"),
                 "model": response.get("model"),
                 "voice": response.get("voice"),
+                "queued_ahead": response.get("queued_ahead"),
                 "output_dir": response.get("output_dir"),
                 "note": (
-                    "The reply has been spoken; the files above were written and "
-                    "played in filename order."
+                    "The text is accepted. Synthesis and playback run in the resident "
+                    "worker and continue even if this result is dropped or the turn "
+                    "ends; tts_status() reports the queue while it runs and the "
+                    "finished record under worker.last."
                 ),
             },
             indent=2,

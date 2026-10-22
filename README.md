@@ -54,8 +54,8 @@ over:
 - **The server holds no model.** It boots in milliseconds and stays responsive
   because there is nothing in it to load. That is deliberate: `tts_status` and
   `list_voices` must answer while a model is still downloading.
-- **The CLI is a second front door, not a third layer.** `cbc speak "..."` runs
-  the same `Speaker` directly, without the MCP server; `cbc worker*` commands use
+- **The CLI is a second front door, not a third layer.** `mac speak "..."` runs
+  the same `Speaker` directly, without the MCP server; `mac worker*` commands use
   the same TCP socket the server uses. Nothing in the CLI is a parallel
   implementation of synthesis.
 
@@ -78,10 +78,16 @@ a reply longer than the turn was killed mid-sentence no matter how the queue was
 drained. A resident worker outlives any turn, and keeps the model loaded, so
 successive replies pay nothing for the load.
 
-`speak` therefore blocks until the reply has been spoken. That is deliberate —
-the tool result is a record of what was actually written and played, not a
-promise to write something later. The audio is played by the worker, so it keeps
-playing regardless of what the harness does with the server process.
+`speak` accepts a reply and answers immediately; rendering and playback keep
+running in the worker afterwards. A blocking answer was the earlier design —
+the tool result was a record of what was actually written and played, taken at
+the moment the reply finished — but it held the harness's tool call open for the
+entire spoken duration, and LM Studio's tool-call timeout aborts such a call
+long before a long reply finishes, cutting the turn off mid-playback. Returning
+on acceptance makes `speak` immune to any client timeout. The audio is played
+by the worker, so it keeps playing regardless of what the harness does with the
+server process, and the record of the utterance (written files, played counts,
+timings, errors) is served afterwards by `tts_status` under `worker.last`.
 
 ## The four models
 
@@ -458,8 +464,10 @@ Speaking stays an explicit choice, by tool call or by `/speak`.
 
 ### `speak`
 
-The main call. Accepts text, hands it to the resident worker, and returns once
-the whole reply has been spoken. The worker renders it chunk by chunk into
+The main call. Accepts text, hands it to the resident worker, and returns as
+soon as the worker has accepted it — synthesis and playback then run to
+completion in the worker, regardless of what the caller does with the result.
+The worker renders it chunk by chunk into
 `<message_id>_<n>.wav` and plays the chunks in order. Rendering runs on its own
 thread, a few chunks ahead of the player, so a boundary costs the configured
 pause, not a full render's worth of silence.
@@ -519,16 +527,17 @@ an opening sentence too short to hide the next render, then keeps up to three
 rendered chunks banked ahead. Nothing is timed at runtime: the queue paces the
 renderer, so a machine that renders faster simply stays further ahead.
 
-The call returns when the reply has been spoken — it reports the message id, the
-chunk files that were written and played, and the measured synthesis and audio
-durations. `first_audio_s` is the time from submission to the first audible chunk
-and `max_gap_s` is the worst silence the player could not avoid, so dryness is
-measurable instead of something you have to hear. Playback is strictly in order
-while rendering runs ahead, so the first sentence is audible within seconds and the
-rest follow without a render gap between them. Files stay on disk and replay in
-filename order; there is no stitched final file. `stop_speech` cuts the current
-sentence and cancels everything still queued.
-
+On acceptance `speak` reports the message id, the chunk count, the file names
+the chunks will be written to and how many utterances are queued ahead — it
+does not wait for the utterance to play. Once it has finished, `tts_status`'s
+`worker.last` carries the record of what was written and played: the measured
+synthesis and audio durations, `first_audio_s` (submission to the first audible
+chunk) and `max_gap_s` (the worst silence the player could not avoid), so
+dryness is measurable instead of something you have to hear. Playback is
+strictly in order while rendering runs ahead, so the first sentence is audible
+within seconds and the rest follow without a render gap between them. Files
+stay on disk and replay in filename order; there is no stitched final file.
+`stop_speech` cuts the current sentence and cancels everything still queued.
 Because the audio belongs to the worker, it keeps playing even if the MCP server
 process goes away when the turn ends.
 
@@ -559,7 +568,10 @@ Read the warm row as the shape of the pipeline: `first_audio_s` plus the audio
 duration plus the pause budget accounts for essentially the whole wall clock
 (2.1 + 81.9 + 2.0 = 86.0 s against 87.3 s measured), and `max_gap_s` is zero, so
 every boundary was covered by a chunk that had finished rendering while the
-previous one played. The cold row is the same pipeline behind a model load —
+previous one played. Cold and warm wall clock here is the worker pipeline
+(submission to the last chunk spoken), not the tool call — since speak returns
+on acceptance, the call itself lasts milliseconds. The cold row is the same
+pipeline behind a model load —
 the first `generate()` pays for torch, the weights and CUDA init, and there is
 nothing to play until it returns. That cost belongs to the first call of a worker
 session, not to the streaming design.
@@ -715,14 +727,14 @@ uv run mcp-agent-chatterbox serve
 
 The console script is only on `PATH` inside the project (or via `uv run`). To call
 it from anywhere, install a tiny shim — see
-[Install the `cbc` shim](#install-the-cbc-shim-to-run-it-from-anywhere).
+[Install the `mac` shim](#install-the-mac-shim-to-run-it-from-anywhere).
 
 `worker` runs the resident process in the foreground; it loads the model on the
 first utterance and keeps it loaded. `speak` shares the same code path and blocks
 until the queue is drained, so it is the fastest way to check a fresh install
 without involving MCP at all.
 
-### Install the `cbc` shim (to run it from anywhere)
+### Install the `mac` shim (to run it from anywhere)
 
 `pip`/`uv` installs the console script **inside this project's environment only**,
 so from any other directory `mcp-agent-chatterbox` is not a command. That is the
@@ -752,11 +764,11 @@ one permanently (then open a new terminal):
 )
 ```
 
-**2. Create `%USERPROFILE%\bin\cbc.cmd`** with your own repo path in `REPO`:
+**2. Create `%USERPROFILE%\bin\mac.cmd`** with your own repo path in `REPO`:
 
 ```bat
 @echo off
-REM cbc - run mcp-agent-chatterbox from any directory.
+REM mac - run mcp-agent-chatterbox from any directory.
 setlocal
 set "REPO=<absolute path to this repo>"
 
@@ -767,7 +779,7 @@ if %ERRORLEVEL% equ 0 goto :use_uv
 REM Fallback: the project venv, for machines without uv.
 if exist "%REPO%\.venv\Scripts\python.exe" goto :use_venv
 
-echo cbc: mcp-agent-chatterbox not found.
+echo mac: mcp-agent-chatterbox not found.
 echo   tried: uv run --directory "%REPO%" mcp-agent-chatterbox
 echo   tried: "%REPO%\.venv\Scripts\python.exe" -m mcp_agent_chatterbox
 echo Is the repo path right, and has the environment been synced?
@@ -786,7 +798,7 @@ exit /b %ERRORLEVEL%
 
 ```powershell
 cd C:\
-cbc worker-status
+mac worker-status
 ```
 
 Expect either `worker on 127.0.0.1:8765: idle` or a `no worker on ...` line. Both
@@ -795,18 +807,18 @@ prove the shim reached the package; only the first proves a worker is running.
 Why two branches: `uv run` is the fast path and cannot drift from the lockfile,
 but it is useless on a machine without `uv`. The venv fallback needs no tooling
 beyond the synced environment. `%*` forwards every argument and `exit /b
-%ERRORLEVEL%` keeps the exit code, so `cbc worker-status` still exits non-zero
+%ERRORLEVEL%` keeps the exit code, so `mac worker-status` still exits non-zero
 when no worker is up — which is what makes it usable in a script.
 
 **Do not wrap the two commands in `if (...)` blocks.** In batch, `%ERRORLEVEL%`
 inside a parenthesised block is substituted when the block is *parsed*, not when
 each line runs, so `exit /b %ERRORLEVEL%` would return the status from before
-the command — 0 every time. That silently turns a failing `cbc speak` into a
+the command — 0 every time. That silently turns a failing `mac speak` into a
 successful one. Labelled `goto` branches keep each `%ERRORLEVEL%` on a line of
 its own, read after the command it belongs to.
 
-Then from anywhere: `cbc worker`, `cbc worker-status`, `cbc worker-stop`,
-`cbc doctor`, `cbc speak "..."`.
+Then from anywhere: `mac worker`, `mac worker-status`, `mac worker-stop`,
+`mac doctor`, `mac speak "..."`.
 
 ## Web surface (HTTP transport)
 
@@ -906,7 +918,7 @@ No secrets are involved.
 | `CHATTERBOX_SENTENCES_PER_CHUNK` | `3` | Sentences batched into one chunk. Every chunk is a separate `generate()` call costing a pause and a fresh prosody start, so `1` makes short-sentence speech staccato. The first sentence always stays alone (fast start); a batch never exceeds `CHATTERBOX_MAX_CHUNK_CHARS`, and it is capped by speaking time too, so it can never grow past ~2.2× the playback length of the chunk before it |
 | `CHATTERBOX_CHUNK_PAUSE_MS` | `250` | Silence between played chunks — between sentence groups when batching, not between every sentence |
 | `CHATTERBOX_WORKER_PORT` | `8765` | Loopback port the worker listens on. The server and the worker read this same value; point them at different ones and `speak` reports `worker_not_running` while a healthy worker sits on the other port |
-| `CHATTERBOX_WORKER_CONNECT_TIMEOUT` | `5` | Seconds to wait for the **connection** to the worker. Bounds the connect only, never the reply — rendering takes as long as the speech takes, and cutting the read off would abandon audio that is still being spoken |
+| `CHATTERBOX_WORKER_CONNECT_TIMEOUT` | `5` | Seconds to wait for the **connection** to the worker. Bounds the connect only, never the read — the dispatch loop answers one caller at a time, so a request may wait behind another connection, and cutting the read off would turn that wait into a false failure |
 | `CHATTERBOX_VRAM_MB` | `4096` | Free-VRAM floor for a load attempt |
 | `CHATTERBOX_STRICT_VRAM` | `0` | `1` refuses a load below the floor instead of warning |
 | `CHATTERBOX_HF_HOME` | unset | Where the Hugging Face cache lives. Does not compete with `HF_HOME` — it **sets** it, at load time, before `huggingface_hub` seals the value on import. Set it in `.env` so the cache root cannot be lost to a harness that does not forward your environment. See [Model weights](#model-weights) |

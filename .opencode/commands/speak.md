@@ -20,5 +20,6 @@ Call that tool with `text` set to the text above.
 
 Then report in one short line: how many chunk files were written, the audio
 duration, and whether it played. Do not repeat or quote the spoken text back.
-The call returns once the reply has been spoken; if it reports
-`worker_not_running`, say so and tell the user to start the worker.
+The call returns as soon as the worker accepts the text; synthesis and playback
+then run in the resident worker, unaffected by harness tool-call timeouts. If it
+reports `worker_not_running`, say so and tell the user to start the worker.

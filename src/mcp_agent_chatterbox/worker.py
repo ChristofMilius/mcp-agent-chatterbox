@@ -39,8 +39,12 @@ so two concurrent generate() calls on it are not safe.
             {"op": "stop"}      cancel queued work and stop playback
             {"op": "shutdown"}  drain, then exit
 
-  response  {"ok": true,  "status": "done"|"idle"|"busy"|"stopping"|..., ...}
+  response  {"ok": true,  "status": "queued" for speak, "idle"|"busy"|"stopping"|... else, ...}
             {"ok": false, "reason": "<ToolFault reason>", "message": "..."}
+
+The speak op is answered with the acceptance payload as soon as the text is
+queued; rendering and playback continue afterwards, and the finished record is
+served by the status op (`last`).
 
 A response is always written before the connection closes, including for a
 request that could not be parsed, so a caller never has to guess why a connect
@@ -169,9 +173,10 @@ def send_request(
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.sendall(encode(request))
-            # The worker answers only once the work is done, so the read
-            # timeout is not `timeout`: a five-sentence reply takes tens of
-            # seconds to render and must not be mistaken for a dead worker.
+            # The connect timeout bounds the connect only, never the read: the
+            # dispatch loop answers one caller at a time, so a request may have
+            # to wait behind another connection before its answer is written.
+            # Cutting the read off would turn that wait into a false failure.
             sock.settimeout(None)
             raw = _read_line(sock)
     except (ConnectionRefusedError, TimeoutError, OSError) as exc:
@@ -393,11 +398,16 @@ def _dispatch(speaker, request: dict) -> tuple[dict, bool]:
                 "message": "speak needs a string text field.",
             }, False
         try:
-            # The worker blocks until the reply has been spoken. That is the
-            # contract: a client with a bounded read timeout would otherwise
-            # abandon a render that is still running and report a failure for
-            # audio that arrives afterwards. Nothing is lost by waiting -- the
-            # server-side tool call that talks to this worker has no timeout.
+            # Fire and forget: the answer goes out as soon as the text is
+            # accepted, not once the reply has been spoken. A blocking answer
+            # held the caller's tool call open for the whole spoken duration,
+            # which a harness with a tool-call timeout (LM Studio) aborts long
+            # before a long reply finishes -- and the abandoned call cut the
+            # turn off with audio still playing. The worker being resident is
+            # what makes returning early safe: rendering and playback continue
+            # here no matter what the caller does with the response. The
+            # record of the utterance is available afterwards through the
+            # status op (speaker.status()["last"]).
             payload = speaker.submit(
                 text,
                 model=request.get("model"),
@@ -426,28 +436,10 @@ def _dispatch(speaker, request: dict) -> tuple[dict, bool]:
                 "message": f"{type(exc).__name__} while accepting the text (see the log)",
             }, False
 
-        speaker.wait()
-        last = speaker.status()["last"] or {}
-        return (
-            {
-                "ok": True,
-                "status": "done",
-                "message_id": payload["message_id"],
-                "chunks": payload["chunks"],
-                "written": last.get("written", []),
-                "errors": last.get("errors", []),
-                "played_chunks": last.get("played_chunks", 0),
-                "synthesis_s": last.get("synthesis_s", 0.0),
-                "duration_s": last.get("duration_s", 0.0),
-                "first_audio_s": last.get("first_audio_s"),
-                "max_gap_s": last.get("max_gap_s"),
-                "device": last.get("device"),
-                "output_dir": payload["output_dir"],
-                "model": payload["model"],
-                "voice": payload["voice"],
-            },
-            False,
-        )
+        # The acceptance payload itself (status "queued", message_id, chunk
+        # files, ...). No wait() and no `last` summary here: the job is often
+        # still rendering when the answer is written, which is the point.
+        return {"ok": True, **payload}, False
 
     if op == "status":
         state = speaker.status()

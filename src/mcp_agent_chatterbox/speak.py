@@ -23,12 +23,17 @@ continues without gaps while the rest of the reply is still being generated.
 Who waits, and who does not
 ---------------------------
 submit() returns immediately and the FIFO does the long work, because the module
-that drives it may not be able to wait. The CLI's `speak` subcommand and the
-worker both call wait() (or drain()) afterwards, so *they* block until the audio
-has been spoken — that is the honest thing for a resident process to do. A
-caller that holds the FIFO without waiting must arrange to outlive the work,
-which is the whole reason the worker is a separate long-lived process rather
-than a thread inside the MCP server (see worker.py).
+that drives it may not be able to wait. A caller that holds the FIFO without
+waiting must arrange to outlive the work, which is the whole reason the worker
+is a separate long-lived process rather than a thread inside the MCP server
+(see worker.py). The two callers make opposite choices: the CLI's `speak`
+subcommand calls wait() afterwards and blocks until the audio has been spoken —
+no one aborts a terminal command, and the operator wants the summary — while
+the worker answers with the acceptance payload and lets the utterance continue
+in the background, because a tool call that waited would be cut off by a
+harness with a client-side tool-call timeout (LM Studio). drain() is the exit
+path that makes not-waiting safe for the worker: serve() runs it on the way
+out, so accepted speech is finished rather than discarded.
 
 Why a queue and not an in-request loop
 --------------------------------------

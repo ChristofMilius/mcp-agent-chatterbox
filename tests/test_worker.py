@@ -21,6 +21,7 @@ import pytest
 from mcp_agent_chatterbox.worker import (
     Server,
     WorkerUnavailable,
+    _dispatch,
     encode,
     send_request,
 )
@@ -257,6 +258,74 @@ class TestClientBehaviour:
         finally:
             server.stop()
             thread.join(timeout=5.0)
+
+
+class TestSpeakDispatch:
+    """
+    The speak op must answer on acceptance, not on completion.
+
+    The wire half of the fire-and-forget contract: an op that replies only
+    after the reply has been spoken keeps the caller's tool call open for the
+    entire spoken duration, which LM Studio's tool-call timeout aborts long
+    before a long text finishes.
+    """
+
+    @staticmethod
+    def _blocking_engine():
+        import torch
+
+        class BlockingEngine:
+            """Parks inside synthesize() until the test releases it."""
+
+            def __init__(self):
+                self.wav = torch.zeros(1, 2400)
+                self.sample_rate = 24000
+                self.entered = threading.Event()
+                self.gate = threading.Event()
+
+            def synthesize(self, text, model_key, **kwargs):
+                self.entered.set()
+                assert self.gate.wait(timeout=10), "test never released the engine"
+                return {
+                    "wav": self.wav,
+                    "sample_rate": self.sample_rate,
+                    "model": model_key,
+                    "device": "cpu",
+                    "chars": len(text),
+                    "elapsed_s": 0.01,
+                }
+
+        return BlockingEngine()
+
+    def test_speak_answers_before_playback_finishes(self, cfg):
+        from mcp_agent_chatterbox.speak import Speaker
+
+        engine = self._blocking_engine()
+        speaker = Speaker(cfg, engine)
+
+        response, _finished = _dispatch(speaker, {"op": "speak", "text": "One. Two."})
+
+        assert response["ok"] is True
+        assert response["status"] == "queued"
+        assert response["message_id"]
+        # The answer is out while the utterance is still rendering: the engine
+        # was entered (the worker picked the job up) yet the render never ended.
+        assert engine.entered.wait(timeout=10)
+        assert engine.gate.is_set() is False, "rendering finished before the answer"
+
+        engine.gate.set()
+        assert speaker.wait(timeout=10)
+        speaker.stop_worker()
+
+    def test_a_refused_text_still_gets_a_record_of_why(self, cfg):
+        from mcp_agent_chatterbox.speak import Speaker
+
+        response, _finished = _dispatch(
+            Speaker(cfg, self._blocking_engine()), {"op": "speak", "text": "   "}
+        )
+
+        assert response["ok"] is False
+        assert response["reason"] == "empty_text"
 
 
 class TestFraming:

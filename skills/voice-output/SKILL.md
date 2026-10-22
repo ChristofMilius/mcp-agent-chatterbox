@@ -133,7 +133,8 @@ Minimal call — text only, so the configured default model and voice stand:
 ```
 
 Audio plays as each sentence renders; everything else keeps its default. The
-call returns once the whole reply has been spoken.
+call returns as soon as the worker accepts the text, and the reply then plays
+out in the resident worker — untouched by harness tool-call timeouts.
 
 Useful variations:
 
@@ -156,7 +157,8 @@ Useful variations:
   seems slow to start, and do not call `speak()` a second time to "get it
   going" — the first call is already speaking and a second one queues behind
   it. There is no `wait`/`progressive` flag; the queue always behaves this way.
-  The call returns when the reply has been spoken.
+  The call returns as soon as the text is accepted; playback continues in the
+  worker afterwards.
 
 ## Preflight and failure handling
 
