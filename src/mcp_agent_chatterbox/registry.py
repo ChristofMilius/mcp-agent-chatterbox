@@ -48,21 +48,76 @@ SUPPORTED_LANGUAGES: dict[str, str] = {
     "zh": "Chinese",
 }
 
-#: Paralinguistic tags the turbo model understands natively. Passed through
-#: verbatim to the tokenizer, so this list is documentation for the model, not
-#: validation — Chatterbox will raise on anything it cannot tokenize.
+#: Bracketed tokens that actually exist in the turbo/nano vocabulary. Ground
+#: truth is the pulled vocab: ResembleAI/chatterbox-turbo and -nano ship the
+#: identical 19-token set in vocab.json/added_tokens.json. Two earlier entries
+#: were a documentation bug that reached callers: '[hiccup]', '[clearthroat]'
+#: and '[whisper]' are NOT tokens in any model's vocabulary — the real spellings
+#: are '[clear throat]' (with the space) and '[whispering]'. Passed through
+#: verbatim to the tokenizer, so this list IS the validation.
 TURBO_TAGS: tuple[str, ...] = (
-    "[laugh]",
+    "[advertisement]",
+    "[angry]",
     "[chuckle]",
+    "[clear throat]",
     "[cough]",
-    "[sigh]",
+    "[crying]",
+    "[dramatic]",
+    "[fear]",
     "[gasp]",
-    "[hiccup]",
-    "[sniff]",
-    "[clearthroat]",
     "[groan]",
-    "[whisper]",
+    "[happy]",
+    "[laugh]",
+    "[narration]",
+    "[sarcastic]",
+    "[shush]",
+    "[sigh]",
+    "[sniff]",
+    "[surprised]",
+    "[whispering]",
 )
+
+#: Sound and style tokens of the wider ResembleAI/chatterbox vocabulary that
+#: multilingual and original load (49 bracketed entries there; these are the
+#: speakable ones after excluding control, language and Cangjie tokens). Note
+#: this set DOES contain '[whisper]' and '[music]' — the tag set is per model.
+ORIGINAL_TAGS: tuple[str, ...] = (
+    "[bark]",
+    "[chew]",
+    "[clear_throat]",
+    "[cough]",
+    "[cry]",
+    "[exhale]",
+    "[gasp]",
+    "[gibberish]",
+    "[giggle]",
+    "[groan]",
+    "[guffaw]",
+    "[howl]",
+    "[humming]",
+    "[inhale]",
+    "[kiss]",
+    "[laughter]",
+    "[meow]",
+    "[mumble]",
+    "[music]",
+    "[shhh]",
+    "[sigh]",
+    "[singing]",
+    "[sip]",
+    "[sneeze]",
+    "[sniff]",
+    "[snore]",
+    "[whisper]",
+    "[whistle]",
+)
+
+
+def tags_for(model_key: str) -> frozenset[str]:
+    """The bracketed tokens that really exist for this model's tokenizer."""
+    if model_key in ("turbo", "nano"):
+        return frozenset(TURBO_TAGS)
+    return frozenset(ORIGINAL_TAGS)
 
 #: Reference clip suffixes accepted for voice cloning.
 VOICE_SUFFIXES: tuple[str, ...] = (".wav", ".mp3", ".flac", ".ogg", ".m4a")

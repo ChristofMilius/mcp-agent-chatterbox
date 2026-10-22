@@ -73,8 +73,8 @@ from mcp_agent_chatterbox.playback import stop as stop_playback
 from mcp_agent_chatterbox.registry import (
     SUPPORTED_LANGUAGES,
     T3_MODELS,
-    TURBO_TAGS,
     get_spec,
+    tags_for,
 )
 from mcp_agent_chatterbox.voices import resolve_voice
 
@@ -162,30 +162,36 @@ _PUNCT_RUN = {".", "!", "?", "\u2026"}
 #: hum], [chuckle], [x]). Bracketed text with digits, code or nested brackets is
 #: deliberately not matched — it is prose-like noise the tokenizer will speak.
 _TAG_MATCH = re.compile(r"\[[A-Za-z][A-Za-z ,'\u2019-]*\]")
-_KNOWN_TAGS = frozenset(TURBO_TAGS)
 
 
-def _drop_unknown_tags(text: str) -> tuple[str, int]:
+def _drop_unknown_tags(text: str, model_key: str) -> tuple[str, int]:
     """
     Canonicalize engine tags, drop every other bracketed token.
 
-    Only the tokens in registry.TURBO_TAGS are real to the tokenizer; anything
-    else in brackets is passed through as literal words, so caller-invented
-    tags ([soft, contented hum]) used to be read out loud and mangle the
-    audio. Known tags in the wrong case are lower-cased; unknown ones are
-    removed and the resulting double spaces collapsed.
+    Only tokens from the model's own vocabulary are real to the tokenizer
+    (registry.tags_for); anything else in brackets is passed through as
+    literal words, so caller-invented tags ([soft, contented hum]) — and tags
+    from the WRONG model's vocabulary, like [whisper] on nano — used to be
+    read out loud and mangle the audio. Known tags in the wrong case are
+    lower-cased (or canonicalized); unknown ones are removed and the resulting
+    double spaces collapsed.
+
+    The tag sets differ per model: turbo/nano know [whispering] and
+    '[clear throat]', the 500M models know [whisper] and [music] — see
+    registry tags_for/TURBO_TAGS/ORIGINAL_TAGS.
 
     Returns (cleaned text, how many tokens were removed). The count is all
     that may ever be logged — the token text itself can carry conversation
     content, and conversations do not belong in the log.
     """
+    known = tags_for(model_key)
     dropped = 0
 
     def _review(match: re.Match) -> str:
         nonlocal dropped
         token = match.group(0)
         canonical = token.lower()
-        if canonical in _KNOWN_TAGS:
+        if canonical in known:
             return canonical
         dropped += 1
         return ""
@@ -641,7 +647,7 @@ class Speaker:
                 requires=["voice", "reference_clip"],
             )
 
-        body, unknown_tags = _drop_unknown_tags(body)
+        body, unknown_tags = _drop_unknown_tags(body, spec.key)
         if unknown_tags:
             logger.info(
                 "[speak] %d invented bracket tag(s) dropped before splitting",

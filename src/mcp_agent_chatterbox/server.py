@@ -37,8 +37,9 @@ Picking a model:
   * nano         110M, English. PREFERRED default: same architecture, tags and
                  built-in voice as turbo with competitive quality, at a third
                  of the size — tightest latency/memory budget (also runs on
-                 CPU). Understands paralinguistic tags written inline in the
-                 text: [laugh], [chuckle], [sigh], [cough], [whisper].
+                 CPU). Understands paralinguistic tokens written inline in the
+                 text: the 19 real tokens of TURBO_TAGS in registry.py — e.g.
+                 [laugh], [chuckle], [sigh], [gasp], [whispering], [clear throat].
   * turbo        350M, English. nano's bigger sibling: same features, more
                  VRAM headroom. Has a built-in voice, so it works with no
                  reference clip.

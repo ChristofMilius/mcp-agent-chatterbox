@@ -888,29 +888,58 @@ class TestUnknownBracketTags:
     Callers keep inventing bracketed tags ([soft, contented hum]) that are not
     engine tokens: the tokenizer passes them through as literal words and the
     nonsense is read aloud. Non-whitelisted bracket tokens therefore leave the
-    text before it is ever split; the tag list is TURBO_TAGS, and the removal
-    log carries the COUNT only (token text can be conversation content).
+    text before it is ever split; the whitelist is the model's own vocabulary
+    (registry.tags_for), and the removal log carries the COUNT only (token
+    text can be conversation content).
     """
 
     def test_an_invented_tag_is_dropped(self):
-        body, dropped = _drop_unknown_tags("[soft, contented hum] Good afternoon.")
+        body, dropped = _drop_unknown_tags("[soft, contented hum] Good afternoon.", "nano")
         assert body == "Good afternoon."
         assert dropped == 1
 
-    def test_the_known_tags_survive_untouched(self):
-        body, dropped = _drop_unknown_tags("[chuckle] Well done, [laugh] truly.")
+    def test_the_real_tokens_survive_untouched(self):
+        body, dropped = _drop_unknown_tags("[chuckle] Well done, [laugh] truly.", "nano")
         assert body == "[chuckle] Well done, [laugh] truly."
         assert dropped == 0
 
     def test_wrong_case_is_canonicalized_not_dropped(self):
         # [Chuckle] drifts from the exact token; lower-casing it is strictly
         # safer than deleting a tag the caller meant to use.
-        body, dropped = _drop_unknown_tags("[Chuckle] Good afternoon.")
+        body, dropped = _drop_unknown_tags("[Chuckle] Good afternoon.", "nano")
         assert body == "[chuckle] Good afternoon."
         assert dropped == 0
 
+    def test_the_space_spelling_is_a_real_token(self):
+        body, dropped = _drop_unknown_tags("[clear throat] Good afternoon.", "nano")
+        assert body == "[clear throat] Good afternoon."
+        assert dropped == 0
+
+    def test_a_nano_caller_is_not_taught_wrong_spellings(self):
+        # [whisper] and [clearthroat] do not exist in ANY model vocabulary;
+        # the real nano spellings are [whispering] and '[clear throat]'.
+        body, dropped = _drop_unknown_tags("[whisper] Good afternoon.", "nano")
+        assert body == "Good afternoon."
+        assert dropped == 1
+        body, dropped = _drop_unknown_tags("[clearthroat] Good afternoon.", "nano")
+        assert body == "Good afternoon."
+        assert dropped == 1
+        body, dropped = _drop_unknown_tags("[whispering] Good afternoon.", "nano")
+        assert body == "[whispering] Good afternoon."
+        assert dropped == 0
+
+    def test_the_500m_set_is_the_other_vocabulary(self):
+        # [whisper] really is a token of multilingual/original, and [humming]
+        # too; on nano the same tokens are not in vocabulary and get dropped.
+        body, dropped = _drop_unknown_tags("[whisper] [humming] Good afternoon.", "original")
+        assert body == "[whisper] [humming] Good afternoon."
+        assert dropped == 0
+        body, dropped = _drop_unknown_tags("[whisper] [humming] Good afternoon.", "nano")
+        assert body == "Good afternoon."
+        assert dropped == 2
+
     def test_the_splice_leaves_no_double_space(self):
-        body, dropped = _drop_unknown_tags("Done, [soft, contented hum] and finally rested.")
+        body, dropped = _drop_unknown_tags("Done, [soft, contented hum] and finally rested.", "nano")
         assert body == "Done, and finally rested."
         assert dropped == 1
 
@@ -918,7 +947,7 @@ class TestUnknownBracketTags:
         # Digits, code and nested brackets are prose noise the tokenizer can
         # speak; inventing a tag is the failure mode, not every bracket.
         text = "Values [2] and [3-4] showed up."
-        body, dropped = _drop_unknown_tags(text)
+        body, dropped = _drop_unknown_tags(text, "nano")
         assert body == text
         assert dropped == 0
 

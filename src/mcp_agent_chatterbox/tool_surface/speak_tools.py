@@ -23,10 +23,11 @@ record is served afterwards by tts_status under worker.last.
 
 Model selection:
   * model="turbo" (default) speaks with no reference clip and understands
-    paralinguistic tags inline in the text: [laugh], [chuckle], [cough],
-    [sigh], [gasp], [hiccup], [sniff], [clearthroat], [groan], [whisper].
-    Other bracketed tokens are not tags and are dropped before rendering
-    (registry.TURBO_TAGS is the canonical list).
+    paralinguistic tokens inline in the text — the tags nano/turbo really
+    contain in their vocabulary are the 19 in registry.TURBO_TAGS, e.g.
+    [laugh], [chuckle], [sigh], [gasp], [whispering] (NOT [whisper]) and
+    [clear throat] (with the space). Brackets that the target model cannot
+    tokenise are not tags and are dropped before rendering.
   * model="nano" is turbo's 110M sibling — same architecture, tags and
     built-in voice, tightest latency/memory budget (also CPU-capable).
   * model="multilingual" needs voice=/reference_clip= and accepts language=
@@ -116,15 +117,21 @@ def register(server, ctx) -> None:
         speak stays in effect for the whole exchange until the user says stop.
         Voice mode ON means EVERY reply is spoken, not just the first.
 
-        TAGS: the only bracketed tokens the engine renders as sound are these
-        ten, exact spelling, lowercase: [laugh], [chuckle], [cough], [sigh],
-        [gasp], [hiccup], [sniff], [clearthroat], [groan], [whisper]. There
-        are no others, and there never were: any other bracketed token, such
-        as [soft, contented hum], [laughs softly] or [music], is NOT a tag and
-        would be read aloud word for word -- so such tokens are dropped from
-        the text before rendering and their mood never reaches the voice. Put
-        mood into word choice and punctuation instead, and use the ten real
-        tags sparingly: most replies need none.
+        TAGS: bracketed tokens act as performance cues ONLY when the target
+        model's vocabulary really contains them — assumption is not allowed,
+        the spelling must be exact from the list. For nano and turbo (the
+        default models) the real token set is these 19: [advertisement],
+        [angry], [chuckle], [clear throat], [cough], [crying], [dramatic],
+        [fear], [gasp], [groan], [happy], [laugh], [narration], [sarcastic],
+        [shush], [sigh], [sniff], [surprised], [whispering]. Watch the two
+        easy traps: it is [whispering], never [whisper], and [clear throat]
+        has a space, never [clearthroat]. Anything else you bracket — an
+        invented tag, or a tag from the 500M models' bigger vocabulary such
+        as [humming] or [music] — is dropped from the text before rendering
+        and its mood never reaches the voice. These
+        tokens are cues, not subtitles: use them sparingly, a few per reply
+        at most, and put the rest of the mood into word choice and
+        punctuation.
 
         One call, one reply. Do not call speak() again while the audio for the
         previous call is still playing -- your harness runs one tool call at a

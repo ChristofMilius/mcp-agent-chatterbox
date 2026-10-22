@@ -93,16 +93,20 @@ timings, errors) is served afterwards by `tts_status` under `worker.last`.
 
 | Key | Params | Languages | Reference clip | Notes |
 |---|---|---|---|---|
-| `turbo` | 350M | English | **not needed** | Default. Fastest, lowest VRAM. Built-in voice. Understands paralinguistic tags inline: `[laugh]`, `[chuckle]`, `[cough]`, `[sigh]`, `[whisper]`. |
+| `turbo` | 350M | English | **not needed** | Default. Fastest, lowest VRAM. Built-in voice. Understands paralinguistic tokens inline: `[laugh]`, `[chuckle]`, `[whispering]`, `[clear throat]`, `[shush]`, and 14 more (exact set: `TURBO_TAGS` in `registry.py`). |
 | `nano` | 110M | English | **not needed** | Turbo's small sibling: same architecture, single-step decoder, tags and built-in voice, tightest latency/memory budget (also runs on CPU). |
 | `multilingual` | 500M | 23 (incl. German) | **required** | `language="de"`, `en`, `fr`, … `t3_model="v2"` (default) or `"v3"`. |
 | `original` | 500M | English | **required** | The CFG / exaggeration-tuning model, for delivery style control. |
 
-The full tag set is `TURBO_TAGS` in `registry.py` (ten tags, `[laugh]` through
-`[whisper]`); the table lists the most common. Anything else in brackets is
-dropped before rendering — an invented tag such as `[soft, contented hum]`
-would otherwise be spoken literally, word for word. The count of dropped
-tokens is logged, never their text.
+The full tag set is per model and read straight from the pulled vocabularies
+(ground truth on 2026-10-22, an earlier list contained invented tokens):
+nano/turbo know exactly 19 (`TURBO_TAGS` in `registry.py`, including the two
+easy-to-miss spellings `[clear throat]` with a space and `[whispering]` with
+`-ing`); the 500M models know a broader 28-token set (`ORIGINAL_TAGS`, which
+*does* contain `[whisper]` and `[music]`). Anything else in brackets is dropped
+before rendering — an invented tag such as `[soft, contented hum]` would
+otherwise be spoken literally, word for word. The count of dropped tokens is
+logged, never their text.
 
 Only `turbo` and `nano` ship a stock voice. The other two raise
 `AssertionError: Please prepare_conditionals first or specify audio_prompt_path`

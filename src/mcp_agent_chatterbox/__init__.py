@@ -5,9 +5,11 @@ Wraps Resemble AI's Chatterbox family (MIT) as an agent-facing tool surface.
 
 Four models, chosen per call:
 
-  * turbo        350M, English, native paralinguistic tags ([laugh],
-                 [chuckle], ...). Lowest VRAM and lowest latency, and the
-                 only model family with a stock voice by default.
+  * turbo        350M, English, native paralinguistic tokens (19 in the
+                 vocabulary: [laugh], [chuckle], [whispering], [clear throat],
+                 [gasp], ... — registry.TURBO_TAGS is exact). Lowest VRAM and
+                 lowest latency, and the only model family with a stock voice
+                 by default.
   * nano         110M, English. Turbo's small sibling: same architecture,
                  tags and built-in voice, tightest budget (also CPU-capable).
   * multilingual 500M, 23 languages including German. Voice cloning is
