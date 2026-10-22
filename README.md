@@ -98,6 +98,12 @@ timings, errors) is served afterwards by `tts_status` under `worker.last`.
 | `multilingual` | 500M | 23 (incl. German) | **required** | `language="de"`, `en`, `fr`, … `t3_model="v2"` (default) or `"v3"`. |
 | `original` | 500M | English | **required** | The CFG / exaggeration-tuning model, for delivery style control. |
 
+The full tag set is `TURBO_TAGS` in `registry.py` (ten tags, `[laugh]` through
+`[whisper]`); the table lists the most common. Anything else in brackets is
+dropped before rendering — an invented tag such as `[soft, contented hum]`
+would otherwise be spoken literally, word for word. The count of dropped
+tokens is logged, never their text.
+
 Only `turbo` and `nano` ship a stock voice. The other two raise
 `AssertionError: Please prepare_conditionals first or specify audio_prompt_path`
 without a reference clip, so the tool checks this up front and returns a

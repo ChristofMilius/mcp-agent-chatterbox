@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import threading
 import time
 import weakref
@@ -69,7 +70,12 @@ from mcp_agent_chatterbox.errors import ToolFault
 from mcp_agent_chatterbox.names import slugify
 from mcp_agent_chatterbox.playback import play, player_available
 from mcp_agent_chatterbox.playback import stop as stop_playback
-from mcp_agent_chatterbox.registry import SUPPORTED_LANGUAGES, T3_MODELS, get_spec
+from mcp_agent_chatterbox.registry import (
+    SUPPORTED_LANGUAGES,
+    T3_MODELS,
+    TURBO_TAGS,
+    get_spec,
+)
 from mcp_agent_chatterbox.voices import resolve_voice
 
 logger = logging.getLogger(__name__)
@@ -151,6 +157,43 @@ _CLOSING_QUOTES = {'"', "'", ")", "]", "}", "\u201d", "\u2019"}
 #: Characters that may form a punctuation run ('...', '?!', '!!!'). The run is
 #: classified as a whole — see _sentence_ends.
 _PUNCT_RUN = {".", "!", "?", "\u2026"}
+
+#: What a bracketed token may contain to count as a tag attempt ([soft, contented
+#: hum], [chuckle], [x]). Bracketed text with digits, code or nested brackets is
+#: deliberately not matched — it is prose-like noise the tokenizer will speak.
+_TAG_MATCH = re.compile(r"\[[A-Za-z][A-Za-z ,'\u2019-]*\]")
+_KNOWN_TAGS = frozenset(TURBO_TAGS)
+
+
+def _drop_unknown_tags(text: str) -> tuple[str, int]:
+    """
+    Canonicalize engine tags, drop every other bracketed token.
+
+    Only the tokens in registry.TURBO_TAGS are real to the tokenizer; anything
+    else in brackets is passed through as literal words, so caller-invented
+    tags ([soft, contented hum]) used to be read out loud and mangle the
+    audio. Known tags in the wrong case are lower-cased; unknown ones are
+    removed and the resulting double spaces collapsed.
+
+    Returns (cleaned text, how many tokens were removed). The count is all
+    that may ever be logged — the token text itself can carry conversation
+    content, and conversations do not belong in the log.
+    """
+    dropped = 0
+
+    def _review(match: re.Match) -> str:
+        nonlocal dropped
+        token = match.group(0)
+        canonical = token.lower()
+        if canonical in _KNOWN_TAGS:
+            return canonical
+        dropped += 1
+        return ""
+
+    cleaned = _TAG_MATCH.sub(_review, text)
+    if dropped:
+        cleaned = re.sub(r" {2,}", " ", cleaned).strip()
+    return cleaned, dropped
 
 
 def _is_pause_run(run: str) -> bool:
@@ -598,6 +641,12 @@ class Speaker:
                 requires=["voice", "reference_clip"],
             )
 
+        body, unknown_tags = _drop_unknown_tags(body)
+        if unknown_tags:
+            logger.info(
+                "[speak] %d invented bracket tag(s) dropped before splitting",
+                unknown_tags,
+            )
         chunks = split_sentences(body, cfg.max_chunk_chars, cfg.sentences_per_chunk)
         message_id = slugify(Path(filename).stem) if filename else self._next_id()
 

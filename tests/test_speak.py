@@ -25,6 +25,7 @@ from mcp_agent_chatterbox.speak import (
     MAX_CHUNK_GROWTH,
     MIN_CHUNK_SECONDS,
     Speaker,
+    _drop_unknown_tags,
     split_sentences,
 )
 
@@ -880,6 +881,53 @@ class TestSentenceSplitting:
         assert chunks[0] == "First."
         assert all(len(s) <= 30 for s in chunks)
         assert " ".join(chunks).split() == text.split()
+
+
+class TestUnknownBracketTags:
+    """
+    Callers keep inventing bracketed tags ([soft, contented hum]) that are not
+    engine tokens: the tokenizer passes them through as literal words and the
+    nonsense is read aloud. Non-whitelisted bracket tokens therefore leave the
+    text before it is ever split; the tag list is TURBO_TAGS, and the removal
+    log carries the COUNT only (token text can be conversation content).
+    """
+
+    def test_an_invented_tag_is_dropped(self):
+        body, dropped = _drop_unknown_tags("[soft, contented hum] Good afternoon.")
+        assert body == "Good afternoon."
+        assert dropped == 1
+
+    def test_the_known_tags_survive_untouched(self):
+        body, dropped = _drop_unknown_tags("[chuckle] Well done, [laugh] truly.")
+        assert body == "[chuckle] Well done, [laugh] truly."
+        assert dropped == 0
+
+    def test_wrong_case_is_canonicalized_not_dropped(self):
+        # [Chuckle] drifts from the exact token; lower-casing it is strictly
+        # safer than deleting a tag the caller meant to use.
+        body, dropped = _drop_unknown_tags("[Chuckle] Good afternoon.")
+        assert body == "[chuckle] Good afternoon."
+        assert dropped == 0
+
+    def test_the_splice_leaves_no_double_space(self):
+        body, dropped = _drop_unknown_tags("Done, [soft, contented hum] and finally rested.")
+        assert body == "Done, and finally rested."
+        assert dropped == 1
+
+    def test_brackets_with_unusual_content_are_left_alone(self):
+        # Digits, code and nested brackets are prose noise the tokenizer can
+        # speak; inventing a tag is the failure mode, not every bracket.
+        text = "Values [2] and [3-4] showed up."
+        body, dropped = _drop_unknown_tags(text)
+        assert body == text
+        assert dropped == 0
+
+    def test_stripping_happens_before_splitting(self, cfg, fake_engine):
+        # Integration: the engine must never see an invented tag, and the
+        # acceptance payload reports the CLEANED character count.
+        payload, _ = run(cfg, fake_engine, "[soft, contented hum] [chuckle] Good afternoon.")
+        assert [c["text"] for c in fake_engine.calls] == ["[chuckle] Good afternoon."]
+        assert payload["text_chars"] == len("[chuckle] Good afternoon.")
 
 
 class TestChunking:

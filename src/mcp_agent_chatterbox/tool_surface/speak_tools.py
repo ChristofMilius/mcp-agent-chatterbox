@@ -23,7 +23,10 @@ record is served afterwards by tts_status under worker.last.
 
 Model selection:
   * model="turbo" (default) speaks with no reference clip and understands
-    paralinguistic tags inline in the text ([laugh], [chuckle], ...).
+    paralinguistic tags inline in the text: [laugh], [chuckle], [cough],
+    [sigh], [gasp], [hiccup], [sniff], [clearthroat], [groan], [whisper].
+    Other bracketed tokens are not tags and are dropped before rendering
+    (registry.TURBO_TAGS is the canonical list).
   * model="nano" is turbo's 110M sibling — same architecture, tags and
     built-in voice, tightest latency/memory budget (also CPU-capable).
   * model="multilingual" needs voice=/reference_clip= and accepts language=
@@ -113,6 +116,16 @@ def register(server, ctx) -> None:
         speak stays in effect for the whole exchange until the user says stop.
         Voice mode ON means EVERY reply is spoken, not just the first.
 
+        TAGS: the only bracketed tokens the engine renders as sound are these
+        ten, exact spelling, lowercase: [laugh], [chuckle], [cough], [sigh],
+        [gasp], [hiccup], [sniff], [clearthroat], [groan], [whisper]. There
+        are no others, and there never were: any other bracketed token, such
+        as [soft, contented hum], [laughs softly] or [music], is NOT a tag and
+        would be read aloud word for word -- so such tokens are dropped from
+        the text before rendering and their mood never reaches the voice. Put
+        mood into word choice and punctuation instead, and use the ten real
+        tags sparingly: most replies need none.
+
         One call, one reply. Do not call speak() again while the audio for the
         previous call is still playing -- your harness runs one tool call at a
         time, so a second call queues behind the first and would be spoken
@@ -130,8 +143,8 @@ def register(server, ctx) -> None:
 
         After the acceptance result, your harness still wants a final chat
         message: close the turn by writing out the EXACT text you passed into
-        text= -- word for word, same punctuation, with only the paralinguistic
-        tags ([laugh], [chuckle], [sigh], ...) removed. The chat message is
+        text= -- word for word, same punctuation, with the bracketed
+        paralinguistic tags (see TAGS above) removed. The chat message is
         the transcript of what was spoken, not a second reply. Do not tidy,
         shorten, rephrase or expand it, and do not append commentary about the
         call: when the written version drifts from the spoken one, the user
