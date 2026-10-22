@@ -759,6 +759,61 @@ class TestSentenceSplitting:
         assert split_sentences("", 500) == []
         assert split_sentences("   \n\t ", 500) == []
 
+    def test_an_ellipsis_is_a_pause_not_a_sentence_end(self):
+        # The model writes pauses as literal '...' mid-sentence. Every dot in
+        # that run used to end its own "sentence", producing fragment pairs
+        # like 'Your report is. . .' + a lonely 'complete.' — dot-initial
+        # chunks the engine renders as near-silence, dropping the words after
+        # the pause from the audio (measured on the real engine 2026-10-22).
+        assert split_sentences("Your report is... complete.", 500) == [
+            "Your report is... complete.",
+        ]
+        # 'ready.' ends with a single dot: a REAL sentence end. Only the
+        # pause run must not break the sentence, everything else still does.
+        assert split_sentences("My notes were... thorough. Ready.", 500) == [
+            "My notes were... thorough.",
+            "Ready.",
+        ]
+
+    def test_the_unicode_ellipsis_glyph_is_also_a_pause(self):
+        assert split_sentences("Your report is\u2026 complete.", 500) == [
+            "Your report is\u2026 complete.",
+        ]
+
+    def test_a_mixed_punctuation_run_with_dots_is_a_pause(self):
+        # '...?!' — the run never terminates a sentence while it holds dots.
+        assert split_sentences("Going...? Again.", 500) == ["Going...? Again."]
+
+    def test_bang_or_question_runs_end_the_sentence_once(self):
+        # A dotless run is a real terminator, but ONE terminator: '!!!' used
+        # to produce a lonely '!!' unit between two ends.
+        assert split_sentences("Wow!!! Really.", 500) == ["Wow!!!", "Really."]
+        assert split_sentences("What?! Really?", 500) == ["What?!", "Really?"]
+
+    def test_a_trailing_ellipsis_still_terminates_the_text(self):
+        assert split_sentences("I was just...", 500) == ["I was just..."]
+
+    def test_an_ellipsis_heavy_message_is_not_shattered(self):
+        # The shape that hit production on 2026-10-22 (661 chars made 13
+        # chunks, eight of them junk). One sentence per chunk shows the unit
+        # boundaries directly: every chunk must start with a word, no lone
+        # '...' fragments and no dot-initial junk.
+        text = (
+            "[chuckle] Good afternoon. Your report is... complete. "
+            "My notes were... thorough. Well? Well? Are you... certain? Yes."
+        )
+        chunks = split_sentences(text, 500, 1)
+        assert chunks == [
+            "[chuckle] Good afternoon.",
+            "Your report is... complete.",
+            "My notes were... thorough.",
+            "Well?",
+            "Well?",
+            "Are you... certain?",
+            "Yes.",
+        ]
+        assert all(chunk[0] not in ".!?\u2026; \n" for chunk in chunks)
+
     def test_hard_splits_an_oversize_sentence_on_word_boundaries(self):
         text = "The quick brown fox jumps over the lazy dog."  # one sentence, 46 chars
         chunks = split_sentences(text, 20)

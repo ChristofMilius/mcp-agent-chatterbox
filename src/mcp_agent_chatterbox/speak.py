@@ -148,19 +148,58 @@ class Synthesizer(Protocol):
 _SENTENCE_ENDERS = {".", "!", "?", ";", "\n"}
 _CLOSING_QUOTES = {'"', "'", ")", "]", "}", "\u201d", "\u2019"}
 
+#: Characters that may form a punctuation run ('...', '?!', '!!!'). The run is
+#: classified as a whole — see _sentence_ends.
+_PUNCT_RUN = {".", "!", "?", "\u2026"}
+
+
+def _is_pause_run(run: str) -> bool:
+    """True when a punctuation run is a written pause, not a sentence end."""
+    return run.count(".") >= 2 or "\u2026" in run
+
 
 def _sentence_ends(text: str) -> list[int]:
-    """Exclusive end indices of the sentence units in `text`."""
+    """
+    Exclusive end indices of the sentence units in `text`.
+
+    A single '.', '!', '?' or ';' (plus any immediately following closing
+    quotes) or a newline ends a sentence. A maximal run of '.', '!', '?' and
+    '…' is classified as a whole: a run containing dots or the ellipsis glyph
+    is a WRITTEN PAUSE and ends nothing, while a dotless run ('?!', '!!!')
+    ends the sentence once.
+
+    The pause rule is what keeps the speech smooth: the model writes its
+    pauses as literal '...' mid-sentence ('Your report is... complete.'),
+    and treating every dot in that run as its own terminator split the text
+    into fragment pairs like 'Your report is. . .' plus a lonely
+    'complete.' — dot-initial chunks the engine renders as near-silence, so
+    the words after the pause dropped out of the audio and every boundary
+    added a stutter. Inside one sentence the pause is simply part of the
+    prosody the engine renders; measured on this stack (nano, 2026-10-22),
+    a word-initial chunk containing '...' delivers its full length.
+    """
     ends: list[int] = []
     n = len(text)
     i = 0
     while i < n:
-        if text[i] in _SENTENCE_ENDERS:
-            j = i + 1
-            while j < n and text[j] in _CLOSING_QUOTES:
-                j += 1
-            ends.append(j)
-            i = j
+        c = text[i]
+        if c in _PUNCT_RUN:
+            start = i
+            while i < n and text[i] in _PUNCT_RUN:
+                i += 1
+            run = text[start:i]
+            if _is_pause_run(run):
+                # Dots/ellipsis inside the sentence: keep scanning. Nothing
+                # terminates here, so the run stays with its sentence.
+                continue
+            # A dotless run ('Wow!!!', 'What?!') ends the sentence once, at
+            # the whole run — never as lonely '!!' fragments between ends.
+            while i < n and text[i] in _CLOSING_QUOTES:
+                i += 1
+            ends.append(i)
+        elif c in _SENTENCE_ENDERS:  # ';' or '\n': plain, single-character
+            ends.append(i + 1)
+            i += 1
         else:
             i += 1
     if not ends or ends[-1] < n:
@@ -199,7 +238,10 @@ def split_sentences(text: str, max_chunk: int, sentences_per_chunk: int = 1) -> 
     Split `text` into chunks of whole sentences.
 
     A sentence breaks at '.', '!', '?' or ';' (plus any immediately following
-    closing quotes) or at a newline. `sentences_per_chunk` consecutive sentences
+    closing quotes) or at a newline. A written pause — '...', '…', or any dot
+    run inside a sentence — does NOT break the sentence: it stays inside as
+    prosody (see `_sentence_ends`). Consecutive '!!!' or '?!' end the sentence
+    once rather than producing empty fragments between them. `sentences_per_chunk` consecutive sentences
     are batched into one chunk when they fit, because every chunk is a separate
     generate() call and each boundary costs a pause plus a fresh prosody start —
     batching keeps short sentences from sounding staccato. The batch is capped by
