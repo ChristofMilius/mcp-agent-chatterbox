@@ -15,8 +15,9 @@ Call auditing:
   register_all() hands every registrar an _AuditedServer whose @tool() wraps
   each handler so the mcp_agent_chatterbox.tool_surface logger records a DEBUG
   line per call: tool name, argument name/value pairs, duration, and result
-  size. Argument reprs and the result preview are capped so audit lines stay
-  bounded even for long utterances.
+  size. Content-bearing arguments (the text to speak) are logged by SIZE ONLY,
+  never as words — spoken conversation content must not reach the log. Argument
+  reprs and the result preview are capped so audit lines stay bounded.
 """
 
 from __future__ import annotations
@@ -39,6 +40,12 @@ logger = logging.getLogger(__name__)
 _MAX_ARG_CHARS = 200
 _MAX_RESULT_PREVIEW = 120
 
+#: Parameters that carry what the user says or has said — logged by size only.
+#: The speak tool's text is conversation content; even a truncated repr preview
+#: would put the first _MAX_ARG_CHARS characters of a private reply into the
+#: log file, which is exactly the leak this guard exists to prevent.
+_CONTENT_ARGS = frozenset({"text"})
+
 
 def _short(value, limit=_MAX_ARG_CHARS) -> str:
     """repr() a value, truncated at `limit` with a cut suffix."""
@@ -56,8 +63,9 @@ def _audit(fn: Callable) -> Callable:
     result size / preview. Exceptions are logged here and re-raised unchanged
     so error handling stays in the tool's try/except.
 
-    The text argument of speak() is never logged in full — the repr cap applies
-    to it like any other, which is what keeps spoken content out of the log.
+    Content-bearing arguments (see _CONTENT_ARGS) are logged as their length,
+    never their words: 'text=<text, 661 chars>'. The result preview only ever
+    contains protocol fields (status, message_id, file names), not text.
     """
     tool_name = fn.__name__
     params = list(inspect.signature(fn).parameters.values())
@@ -67,9 +75,15 @@ def _audit(fn: Callable) -> Callable:
         bound = []
         for i, param in enumerate(params):
             if i < len(args):
-                bound.append(f"{param.name}={_short(args[i])}")
+                value = args[i]
             elif param.name in kwargs:
-                bound.append(f"{param.name}={_short(kwargs[param.name])}")
+                value = kwargs[param.name]
+            else:
+                continue
+            if param.name in _CONTENT_ARGS and isinstance(value, str):
+                bound.append(f"{param.name}=<text, {len(value)} chars>")
+            else:
+                bound.append(f"{param.name}={_short(value)}")
         return " ".join(bound) if bound else "(no args)"
 
     def _record_outcome(start, result=None, error=None):

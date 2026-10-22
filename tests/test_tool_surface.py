@@ -12,13 +12,19 @@ tool stopped synthesizing in-process.
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import threading
 
 import pytest
 
 from mcp_agent_chatterbox.context import AppContext
-from mcp_agent_chatterbox.tool_surface import speak_tools, status_tools, voice_tools
+from mcp_agent_chatterbox.tool_surface import (
+    register_all,
+    speak_tools,
+    status_tools,
+    voice_tools,
+)
 from mcp_agent_chatterbox.worker import Server
 
 _WAIT = 10.0
@@ -127,6 +133,46 @@ def tools(cfg):
 
 def _body(raw: str) -> dict:
     return json.loads(raw)
+
+
+class TestSpeakCallAuditing:
+    """
+    The audit log must never contain the words being spoken.
+
+    speak()'s text is conversation content, so the tool logger records its SIZE
+    only. A repr preview - even capped - would write the head of a private
+    reply straight into the log file, which is the exact leak that emptied the
+    project logs on 2026-10-22.
+    """
+
+    def test_the_spoken_text_is_logged_as_size_never_as_words(self, cfg, worker, caplog):
+        ctx = AppContext(cfg=cfg)
+        server = FakeServer()
+        register_all(server, ctx)  # register_all is what applies the _audit wrapper
+        speak = server.tools["speak"]
+        phrase = "SECRET one. SECRET two. SECRET three."
+
+        with caplog.at_level(logging.DEBUG, logger="mcp_agent_chatterbox.tool_surface"):
+            body = _body(speak(text=phrase))
+
+        assert body["status"] == "accepted" or body["status"] == "queued"
+        calls = [r.getMessage() for r in caplog.records if "[tool speak] call" in r.getMessage()]
+        assert calls, "speak calls must still be audited"
+        assert any(f"text=<text, {len(phrase)} chars>" in line for line in calls)
+        # Not one line of the audit - call, result, or error - may carry words.
+        assert all("SECRET" not in r.getMessage() for r in caplog.records)
+
+    def test_non_content_arguments_are_still_logged(self, cfg, worker, caplog):
+        ctx = AppContext(cfg=cfg)
+        server = FakeServer()
+        register_all(server, ctx)
+        speak = server.tools["speak"]
+
+        with caplog.at_level(logging.DEBUG, logger="mcp_agent_chatterbox.tool_surface"):
+            _body(speak(text="SECRET one.", play_audio=False, model="nano"))
+
+        calls = [r.getMessage() for r in caplog.records if "[tool speak] call" in r.getMessage()]
+        assert any("model='nano'" in line for line in calls)
 
 
 class TestSpeakForwardsToTheWorker:
