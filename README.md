@@ -492,9 +492,10 @@ It is one HTML file and the standard library's `http.server` — no toolkit to
 install, no build step. It plays no audio itself and holds no state: every
 button is one op forwarded to the resident worker, which owns the queue, the
 model and the output directory. That split is not tidiness, it is what makes
-Stop honest — playback is `winsound`, and `PlaySound(None, SND_PURGE)` stops
-only the calling process's audio, so a panel that played the WAVs itself could
-not be cut off from the worker afterwards.
+Stop honest — playback is `winsound`, whose sound belongs to the thread that
+started it, so only the worker's own playback thread can cut a chunk short. A
+panel that played the WAVs itself would be uncancellable from the worker, and
+Stop would only land between chunks.
 
 **Replay is free.** Every message that was ever spoken left its chunks in
 `tts_output/` as `<message_id>_<n>.wav`, so repeating one is a file read, not a
@@ -513,6 +514,16 @@ localhost port and unload your model.
 The page carries no external assets, so it renders the same in a normal browser
 and inside an embedded browser pane. There is no desktop app integration to
 build: it is a URL.
+
+**Stop cuts the sound, not just the queue.** A blocking play starts the WAV
+asynchronously and waits in its own thread, checking a stop flag every 20 ms, so
+pressing Stop silences the current chunk instead of waiting for it to end. A
+stopped chunk counts as played rather than as a playback error.
+
+Further improvements to this web-based panel are **envisioned** — per-message
+deletion, a progress bar for the chunk being spoken, a compact layout for narrow
+panes. None of them changes the design above: a page, a queue owner, and one op
+per button.
 
 ## Tools
 

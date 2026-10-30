@@ -9,9 +9,10 @@ Why a separate process
 The panel does not play audio and does not synthesize. Every button is one op
 sent to the resident worker over the same loopback protocol the MCP server uses
 (worker.send_request). That is not laziness, it is the only arrangement that
-keeps `stop` honest: playback is `winsound`, and `PlaySound(None, SND_PURGE)`
-stops the calling *process*'s audio. A panel that played the WAVs itself would
-be uncancellable from the worker, so a replay would keep talking after Stop.
+keeps `stop` honest: playback is `winsound`, whose sound belongs to the thread
+that started it, so only the worker's own playback thread can cut it short (see
+playback.py). A panel that played the WAVs itself would be uncancellable from
+the worker, so a replay would keep talking after Stop.
 
 Why HTTP and not a GUI toolkit
 ------------------------------
