@@ -7,6 +7,8 @@ Subcommands:
   worker   Run the resident synthesis worker. Start this once, before the
            first spoken reply, and leave it running.
   doctor   Offline diagnostics (paths, torch/CUDA, per-GPU VRAM, voices).
+  panel    Local control panel in a browser: stop the audio, replay an earlier
+           message, speak something by hand. On demand; it owns no audio.
   speak    Synthesize one utterance from the shell — the same code path the
            resident worker uses, so it is the fastest way to check a fresh
            install.
@@ -88,6 +90,21 @@ def _cmd_worker_stop(args) -> int:
         return 1
     print(f"worker on 127.0.0.1:{port}: {response.get('status')} (finishing the queue first)")
     return 0
+
+
+def _cmd_panel(args) -> int:
+    """Run the local control panel (stop, replay, speak by hand)."""
+    from mcp_agent_chatterbox.config import Config
+    from mcp_agent_chatterbox.logging_setup import setup_logging
+    from mcp_agent_chatterbox.panel import DEFAULT_PANEL_PORT, serve
+
+    cfg = Config()
+    setup_logging(str(cfg.logs_dir))
+    port = args.port if args.port is not None else DEFAULT_PANEL_PORT
+    try:
+        return serve(port, worker_port=cfg.worker_port, open_browser=not args.no_open)
+    except KeyboardInterrupt:
+        return 0
 
 
 def _cmd_doctor(args) -> int:
@@ -282,6 +299,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_wstop.add_argument("--port", type=int, default=None)
     p_wstop.set_defaults(func=_cmd_worker_stop)
+
+    p_panel = sub.add_parser(
+        "panel",
+        help="Run the local control panel: stop, replay an old message, speak by hand.",
+    )
+    p_panel.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="Loopback port to serve on (default: 8766).",
+    )
+    p_panel.add_argument(
+        "--no-open",
+        action="store_true",
+        help="Do not open the page in the default browser.",
+    )
+    p_panel.set_defaults(func=_cmd_panel)
 
     p_speak = sub.add_parser("speak", help="Synthesize one utterance and save/play it.")
     p_speak.add_argument("text", help="Text to speak.")

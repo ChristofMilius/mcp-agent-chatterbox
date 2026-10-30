@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chatterbox</title>
+<!--
+  One file, no external assets, on purpose: the page has to render the same in a
+  normal browser and inside an embedded webview (an editor or agent app's browser
+  pane), and neither a CDN font nor a bundle is worth that risk for six buttons.
+  Every action is a POST to the panel process, which forwards it to the resident
+  worker; nothing here touches audio directly.
+-->
+<style>
+  :root {
+    --bg: #14161a; --panel: #1c1f26; --line: #2b3039; --text: #e6e8ec;
+    --muted: #9aa3b2; --accent: #6ea8fe; --warn: #f0b429; --bad: #f26d6d;
+    --ok: #4ade80;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 18px; background: var(--bg); color: var(--text);
+    font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+  }
+  h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .pill {
+    padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+    border: 1px solid var(--line); color: var(--muted);
+  }
+  .pill.busy { color: var(--warn); border-color: var(--warn); }
+  .pill.idle { color: var(--ok); border-color: var(--ok); }
+  .pill.off  { color: var(--bad); border-color: var(--bad); }
+  section {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px; margin-bottom: 14px;
+  }
+  section h2 {
+    margin: 0 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  button {
+    background: #262b34; color: var(--text); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 13px; font: inherit; cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: #24405f; border-color: #35618f; }
+  button.danger:hover:not(:disabled) { border-color: var(--bad); }
+  textarea {
+    width: 100%; min-height: 74px; resize: vertical; background: #14161a;
+    color: var(--text); border: 1px solid var(--line); border-radius: 7px;
+    padding: 9px; font: inherit;
+  }
+  .muted { color: var(--muted); font-size: 12px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex; align-items: center; gap: 10px; padding: 7px 0;
+    border-top: 1px solid var(--line); font-family: ui-monospace, Consolas, monospace;
+    font-size: 12.5px;
+  }
+  li:first-child { border-top: none; }
+  li .id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  li .meta { color: var(--muted); white-space: nowrap; }
+  li button { padding: 3px 9px; font-size: 12px; }
+  #msg { min-height: 18px; font-size: 12.5px; color: var(--muted); }
+  #msg.bad { color: var(--bad); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Chatterbox</h1>
+  <span id="pill" class="pill">connecting…</span>
+  <span id="detail" class="muted"></span>
+</header>
+
+<section>
+  <h2>Playback</h2>
+  <div class="row">
+    <button id="stop" class="danger">Stop</button>
+    <button id="replay-last">Replay last</button>
+    <button id="unload" class="danger">Unload model</button>
+    <span id="queue" class="muted"></span>
+  </div>
+</section>
+
+<section>
+  <h2>Speak something</h2>
+  <textarea id="text" placeholder="Type text and press Speak. Ctrl+Enter also speaks."></textarea>
+  <div class="row" style="margin-top:9px">
+    <button id="speak" class="primary">Speak</button>
+    <span id="count" class="muted"></span>
+  </div>
+</section>
+
+<section>
+  <h2>History <span id="outdir" class="muted"></span></h2>
+  <ul id="history"><li class="muted">nothing rendered yet</li></ul>
+</section>
+
+<div id="msg"></div>
+
+<script>
+"use strict";
+
+const ACTION_HEADER = "X-Chatterbox";
+const $ = (id) => document.getElementById(id);
+let lastState = null;
+
+function say(text, bad) {
+  const el = $("msg");
+  el.textContent = text || "";
+  el.className = bad ? "bad" : "";
+}
+
+async function api(path, body) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", [ACTION_HEADER]: "1" },
+    body: JSON.stringify(body || {}),
+  });
+  const payload = await response.json().catch(() => ({ ok: false, reason: "bad_response" }));
+  if (!payload.ok) {
+    throw new Error(payload.message || payload.reason || ("HTTP " + response.status));
+  }
+  return payload;
+}
+
+function age(seconds) {
+  if (!seconds) return "unknown age";
+  const delta = Math.max(0, Date.now() / 1000 - seconds);
+  if (delta < 60) return Math.round(delta) + "s ago";
+  if (delta < 3600) return Math.round(delta / 60) + "m ago";
+  if (delta < 86400) return Math.round(delta / 3600) + "h ago";
+  return Math.round(delta / 86400) + "d ago";
+}
+
+function size(bytes) {
+  if (!bytes) return "0 B";
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1048576) return (bytes / 1024).toFixed(0) + " kB";
+  return (bytes / 1048576).toFixed(1) + " MB";
+}
+
+function renderHistory(messages) {
+  const list = $("history");
+  list.replaceChildren();
+  if (!messages.length) {
+    const empty = document.createElement("li");
+    empty.className = "muted";
+    empty.textContent = "nothing rendered yet";
+    list.append(empty);
+    return;
+  }
+  for (const message of messages) {
+    const item = document.createElement("li");
+
+    const button = document.createElement("button");
+    button.textContent = "▶";
+    button.title = "Replay " + message.message_id;
+    button.addEventListener("click", () => replay(message.message_id));
+
+    const id = document.createElement("span");
+    id.className = "id";
+    id.textContent = message.message_id;
+
+    const meta = document.createElement("span");
+    meta.className = "meta";
+    meta.textContent =
+      message.chunks + "× · " + size(message.bytes) + " · " + age(message.modified);
+
+    item.append(button, id, meta);
+    list.append(item);
+  }
+}
+
+function applyState(state) {
+  const worker = state.worker || {};
+  const pill = $("pill");
+  const pending = worker.pending || 0;
+  const busy = pending > 0;
+  pill.textContent = busy ? "speaking" : "idle";
+  pill.className = "pill " + (busy ? "busy" : "idle");
+  $("queue").textContent = busy
+    ? pending + " job" + (pending === 1 ? "" : "s") + " queued" +
+      (worker.active ? " · now: " + worker.active : "")
+    : "";
+  const last = worker.last;
+  $("detail").textContent = last
+    ? "last: " + last.chunks + " chunk" + (last.chunks === 1 ? "" : "s") +
+      (last.duration_s ? " · " + last.duration_s + "s audio" : "") +
+      (last.max_gap_s ? " · worst gap " + last.max_gap_s + "s" : "")
+    : "";
+  $("outdir").textContent = state.output_dir || "";
+  renderHistory(state.messages || []);
+}
+
+async function refresh() {
+  try {
+    const response = await fetch("/api/state", { cache: "no-store" });
+    const state = await response.json();
+    if (!state.ok) throw new Error(state.message || state.reason || "worker unavailable");
+    lastState = state;
+    applyState(state);
+    $("stop").disabled = false;
+    $("replay-last").disabled = !(state.messages && state.messages.length);
+  } catch (error) {
+    lastState = null;
+    $("pill").textContent = "worker offline";
+    $("pill").className = "pill off";
+    $("detail").textContent = "";
+    $("queue").textContent = "";
+    $("stop").disabled = true;
+    $("replay-last").disabled = true;
+    say(error.message, true);
+  }
+}
+
+function replay(id) {
+  say("");
+  api("/api/replay", { message_id: id })
+    .then(() => { say("replaying " + id); refresh(); })
+    .catch((error) => say(error.message, true));
+}
+
+async function act(label, path, body) {
+  try {
+    await api(path, body);
+    say(label);
+  } catch (error) {
+    say(error.message, true);
+  }
+  refresh();
+}
+
+$("stop").addEventListener("click", () => act("stopped", "/api/stop"));
+$("replay-last").addEventListener("click", () => {
+  const last = lastState && lastState.worker && lastState.worker.last;
+  const id = (last && last.message_id) ||
+    (lastState && lastState.messages && lastState.messages[0] && lastState.messages[0].message_id);
+  if (id) replay(id);
+});
+$("unload").addEventListener("click", () => {
+  if (confirm("Unload the resident model and free its VRAM?")) act("model unloaded", "/api/unload");
+});
+$("speak").addEventListener("click", () => {
+  const text = $("text").value.trim();
+  if (!text) { say("nothing to speak", true); return; }
+  act("speaking", "/api/speak", { text });
+  $("text").value = "";
+  count();
+});
+$("text").addEventListener("input", count);
+$("text").addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) $("speak").click();
+});
+function count() {
+  const n = $("text").value.length;
+  $("count").textContent = n ? n + " characters" : "";
+}
+
+refresh();
+setInterval(() => { if (!document.hidden) refresh(); }, 2000);
+</script>
+</body>
+</html>

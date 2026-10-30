@@ -1,9 +1,9 @@
 /**
- * tts.js — makes /speak available in every opencode project
- * ========================================================
+ * tts.js — makes /speak, /speak-stop and /tts-status available in every opencode project
+ * ==================================================================================
  *
  * Part of the opencode_chatterbox project. This plugin has one job: install the
- * `/speak` command globally.
+ * repo's commands into the global opencode commands directory.
  *
  * Why this exists:
  *   The synthesis itself needs no plugin. Once the mcp-agent-chatterbox MCP
@@ -20,11 +20,14 @@
  *   only work in sessions started inside this repo, and the fix would be a
  *   manual file copy that silently drifts.
  *
- *   So this plugin does for the command what the MCP registration does for the
- *   tools: it self-replicates. When opencode loads this file, it copies
- *   `.opencode/commands/speak.md` into the global commands directory. The repo
- *   copy is the source of truth and the global copy is a deployment replica,
- *   refreshed on every load — edit the repo copy, never the global one.
+ *   So this plugin does for the commands what the MCP registration does for the
+ *   tools: it self-replicates. When opencode loads this file, it copies every
+ *   `*.md` in the repo's `.opencode/commands/` into the global commands
+ *   directory. The repo copy is the source of truth and the global copy is a
+ *   deployment replica, refreshed on every load — edit the repo copy, never the
+ *   global one. Deleting a command in the repo does NOT delete the global copy:
+ *   this plugin installs, it does not reap, and removing a file the user may
+ *   have edited is not a plugin's decision to make.
  *
  *   V2 has a `ctx.command.transform()` editor, and it is the obvious tool for
  *   this job. It is deliberately not used: a transform registers into the
@@ -62,10 +65,10 @@
 const { join, dirname } = await import("node:path")
 const { homedir } = await import("node:os")
 const { fileURLToPath } = await import("node:url")
-const { access, mkdir, readFile, writeFile } = await import("node:fs/promises")
+const { access, mkdir, readFile, readdir, writeFile } = await import("node:fs/promises")
 
 const PLUGIN_ID = "chatterbox-tts"
-const COMMAND_NAME = "speak.md"
+const COMMAND_SUFFIX = ".md"
 
 const GLOBAL_COMMANDS_DIR = join(
   process.env.XDG_CONFIG_HOME || join(homedir(), ".config"),
@@ -74,23 +77,23 @@ const GLOBAL_COMMANDS_DIR = join(
 )
 
 /**
- * Resolve the repo copy of speak.md that belongs next to this plugin.
+ * Resolve the repo's `.opencode/commands/` directory.
  *
  * `import.meta.url` is authoritative: it is this exact file, so the commands
  * directory two levels up is the source of truth no matter how opencode
  * loaded it. The context lookup is only a fallback for a bundler that rewrites
  * or drops the module URL.
  */
-async function commandSource(ctx) {
+async function commandsSource(ctx) {
   const candidates = []
 
   if (typeof import.meta.url === "string" && import.meta.url.startsWith("file:")) {
-    candidates.push(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "commands", COMMAND_NAME))
+    candidates.push(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "commands"))
   }
 
   const projectDirectory = ctx?.location?.project?.directory
   if (projectDirectory) {
-    candidates.push(join(projectDirectory, ".opencode", "commands", COMMAND_NAME))
+    candidates.push(join(projectDirectory, ".opencode", "commands"))
   }
 
   for (const candidate of candidates) {
@@ -104,28 +107,50 @@ async function commandSource(ctx) {
 
 const samePath = (a, b) => a.toLowerCase().replace(/\\/g, "/") === b.toLowerCase().replace(/\\/g, "/")
 
-async function replicateCommand(ctx, log) {
-  const source = await commandSource(ctx)
+async function replicateCommands(ctx, log) {
+  const source = await commandsSource(ctx)
   if (!source) {
-    log("warn", "speak.md not found next to the plugin; /speak was not installed")
+    log("warn", "no commands directory found next to the plugin; nothing was installed")
     return
   }
 
-  const target = join(GLOBAL_COMMANDS_DIR, COMMAND_NAME)
-  if (samePath(source, target)) return
+  let names
+  try {
+    names = (await readdir(source)).filter((name) => name.endsWith(COMMAND_SUFFIX))
+  } catch (err) {
+    log("error", `could not read ${source}: ${String(err)}`)
+    return
+  }
+  if (names.length === 0) {
+    log("warn", `no ${COMMAND_SUFFIX} commands in ${source}; nothing was installed`)
+    return
+  }
 
   try {
-    const mine = await readFile(source)
-    let same = false
-    try {
-      same = (await readFile(target)).equals(mine)
-    } catch {}
-    if (same) return
     await mkdir(GLOBAL_COMMANDS_DIR, { recursive: true })
-    await writeFile(target, mine)
-    log("info", `installed /speak -> ${GLOBAL_COMMANDS_DIR}`)
   } catch (err) {
-    log("error", `could not install /speak: ${String(err)}`)
+    log("error", `could not create ${GLOBAL_COMMANDS_DIR}: ${String(err)}`)
+    return
+  }
+
+  for (const name of names) {
+    const from = join(source, name)
+    const to = join(GLOBAL_COMMANDS_DIR, name)
+    if (samePath(from, to)) continue
+
+    try {
+      const mine = await readFile(from)
+      let same = false
+      try {
+        same = (await readFile(to)).equals(mine)
+      } catch {}
+      if (same) continue
+      await writeFile(to, mine)
+      const command = name.slice(0, -COMMAND_SUFFIX.length)
+      log("info", `installed /${command} -> ${GLOBAL_COMMANDS_DIR}`)
+    } catch (err) {
+      log("error", `could not install ${name}: ${String(err)}`)
+    }
   }
 }
 
@@ -142,6 +167,6 @@ export default {
       else if (level === "warn") console.warn(line)
       else console.log(line)
     }
-    await replicateCommand(ctx, log)
+    await replicateCommands(ctx, log)
   },
 }

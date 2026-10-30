@@ -68,6 +68,7 @@ from mcp_agent_chatterbox.audio import duration_s, write_wav
 from mcp_agent_chatterbox.config import Config
 from mcp_agent_chatterbox.errors import ToolFault
 from mcp_agent_chatterbox.names import slugify
+from mcp_agent_chatterbox.output import chunk_files
 from mcp_agent_chatterbox.playback import play, player_available
 from mcp_agent_chatterbox.playback import stop as stop_playback
 from mcp_agent_chatterbox.registry import (
@@ -497,6 +498,10 @@ class _Job:
     should_play: bool
     out_dir: Path
     pause_s: float
+    #: Set on a REPLAY job: play these files in order instead of rendering.
+    #: A replay job carries no text and no knobs, and costs no GPU time — the
+    #: audio was rendered the first time the message was spoken.
+    audio_files: list[Path] | None = None
     cancelled: threading.Event = field(default_factory=threading.Event)
     # Filled in by the worker as it goes.
     written: list[str] = field(default_factory=list)
@@ -510,10 +515,16 @@ class _Job:
     #: Silence at each boundary the player could not avoid, in seconds.
     gaps: list[float] = field(default_factory=list)
 
+    @property
+    def unit_count(self) -> int:
+        """Chunks to play: rendered files for a replay, text chunks otherwise."""
+        return len(self.audio_files) if self.audio_files is not None else len(self.chunks)
+
     def summary(self) -> dict:
         return {
             "message_id": self.message_id,
-            "chunks": len(self.chunks),
+            "chunks": self.unit_count,
+            "replay": self.audio_files is not None,
             "written": list(self.written),
             "errors": list(self.errors),
             "played_chunks": self.played_chunks,
@@ -677,13 +688,7 @@ class Speaker:
             out_dir=cfg.output_dir,
             pause_s=cfg.chunk_pause_ms / 1000.0,
         )
-        with self._idle:
-            queued_ahead = self._pending
-            self._pending += 1
-            self._live.add(job)
-
-        self._ensure_worker()
-        self._queue.put(job)
+        queued_ahead = self._enqueue(job)
 
         logger.info(
             "[speak] %s accepted: %d chars, %d sentence chunks, %d ahead, play=%s",
@@ -710,6 +715,75 @@ class Speaker:
                 "order to replay the utterance."
             ),
         }
+
+    def replay(self, message_id: str) -> dict:
+        """
+        Queue an already-rendered message for playback. No synthesis, no GPU.
+
+        The audio of a message that was spoken earlier is still on disk, so
+        repeating it is a file read rather than a render: it starts immediately
+        and cannot fail for lack of VRAM. It goes through the same queue as a
+        spoken utterance, which is what keeps two things true — the replay never
+        overlaps speech that is still being rendered or played, and `stop()`
+        cuts a replay off exactly the way it cuts off a live one.
+
+        Raises ToolFault when the message has no chunks on disk (never rendered,
+        already pruned, or an id from a different output directory).
+        """
+        files = chunk_files(self.cfg.output_dir, message_id)
+        if not files:
+            raise ToolFault(
+                "message_not_found",
+                f"No rendered chunks for message {message_id!r} in the output "
+                "directory. Ask for the history to see the messages that can be "
+                "replayed.",
+                message_id=message_id,
+                output_dir=str(self.cfg.output_dir),
+            )
+
+        job = _Job(
+            message_id=message_id,
+            chunks=[],
+            model="",
+            knobs={},
+            should_play=True,
+            out_dir=self.cfg.output_dir,
+            pause_s=self.cfg.chunk_pause_ms / 1000.0,
+            audio_files=files,
+        )
+        queued_ahead = self._enqueue(job)
+        logger.info(
+            "[speak] %s replay queued: %d chunk(s), %d ahead",
+            message_id,
+            len(files),
+            queued_ahead,
+        )
+        return {
+            "status": "queued",
+            "message_id": message_id,
+            "chunks": len(files),
+            "files": [path.name for path in files],
+            "output_dir": str(self.cfg.output_dir),
+            "queued_ahead": queued_ahead,
+            "note": "Replaying on disk; no synthesis is involved.",
+        }
+
+    def _enqueue(self, job: _Job) -> int:
+        """
+        Put a job on the queue and start the worker if it is not running.
+
+        Returns how many jobs were already queued ahead of it. Both entry points
+        (submit, replay) must increment `_pending` and register in `_live` under
+        the same lock, or `wait()` reports a drained queue while a job is still
+        on the way: keeping that in one place is the point.
+        """
+        with self._idle:
+            queued_ahead = self._pending
+            self._pending += 1
+            self._live.add(job)
+        self._ensure_worker()
+        self._queue.put(job)
+        return queued_ahead
 
     def wait(self, timeout: float | None = None) -> bool:
         """Block until every queued job has finished. True when drained."""
@@ -892,26 +966,38 @@ class Speaker:
 
     def _render(self, job: _Job) -> None:
         job.out_dir.mkdir(parents=True, exist_ok=True)
-        total = len(job.chunks)
-        if job.should_play and player_available():
+        total = job.unit_count
+        if job.audio_files is not None:
+            self._play_files(job)
+        elif job.should_play and player_available():
             self._render_and_play(job, total)
         else:
             self._render_only(job, total)
-        if not job.cancelled.is_set():
-            first = f"{job.first_audio_s:.2f}s" if job.first_audio_s is not None else "n/a"
-            gap = f"{max(job.gaps):.2f}s" if job.gaps else "none"
+        if job.cancelled.is_set():
+            return
+        if job.audio_files is not None:
             logger.info(
-                "[speak] %s done: %d/%d chunks, %.2fs synthesis, %.2fs audio, played %d, "
-                "first audio %s, worst gap %s",
+                "[speak] %s replay done: played %d/%d chunk(s), %d error(s)",
                 job.message_id,
-                len(job.written),
-                total,
-                job.synthesis_s,
-                job.duration_s,
                 job.played_chunks,
-                first,
-                gap,
+                total,
+                len(job.errors),
             )
+            return
+        first = f"{job.first_audio_s:.2f}s" if job.first_audio_s is not None else "n/a"
+        gap = f"{max(job.gaps):.2f}s" if job.gaps else "none"
+        logger.info(
+            "[speak] %s done: %d/%d chunks, %.2fs synthesis, %.2fs audio, played %d, "
+            "first audio %s, worst gap %s",
+            job.message_id,
+            len(job.written),
+            total,
+            job.synthesis_s,
+            job.duration_s,
+            job.played_chunks,
+            first,
+            gap,
+        )
 
     def _render_only(self, job: _Job, total: int) -> None:
         """Render every chunk when nothing is competing for the time."""
@@ -1001,6 +1087,44 @@ class Speaker:
         finally:
             stop.set()
             producer.join()
+
+    def _play_files(self, job: _Job) -> None:
+        """
+        Play a replay job's existing chunk files in order.
+
+        No preroll and no render-ahead thread: every file is already on disk, so
+        there is nothing to wait for and nothing to hide. The pause between
+        chunks matches a live utterance, so a replay sounds like the original
+        instead of a clip run together.
+        """
+        files = job.audio_files or []
+        if not player_available():
+            job.errors.append("no audio player")
+            return
+        total = len(files)
+        for index, path in enumerate(files, start=1):
+            if job.cancelled.is_set():
+                logger.info(
+                    "[speak] %s replay cancelled before chunk %d/%d",
+                    job.message_id,
+                    index,
+                    total,
+                )
+                return
+            played, reason = play(path, wait=True)
+            if not played:
+                logger.warning(
+                    "[speak] %s replay chunk %d/%d not played: %s",
+                    job.message_id,
+                    index,
+                    total,
+                    reason,
+                )
+                job.errors.append(f"chunk {index}: {reason or 'playback failed'}")
+                continue
+            job.played_chunks += 1
+            if job.pause_s > 0 and index < total:
+                time.sleep(job.pause_s)
 
     def _fill_buffer(
         self, job: _Job, ready: queue.Queue[_Rendered | None], stop: threading.Event

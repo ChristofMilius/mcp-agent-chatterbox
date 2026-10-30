@@ -35,6 +35,9 @@ so two concurrent generate() calls on it are not safe.
 
   request   {"op": "speak", "text": "...", ...knobs}
             {"op": "status"}
+            {"op": "history"}   list the messages whose audio is still on disk
+            {"op": "replay", "message_id": "..."}
+                                play an already-rendered message again, no GPU
             {"op": "unload"}    drop the resident model, return its VRAM
             {"op": "stop"}      cancel queued work and stop playback
             {"op": "shutdown"}  drain, then exit
@@ -86,6 +89,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp_agent_chatterbox.errors import ToolFault
+from mcp_agent_chatterbox.output import scan_output
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +106,12 @@ _LISTEN_BACKLOG = 16
 #: buffer without bound. The text budget is 4000 chars (CHATTERBOX_MAX_CHARS);
 #: this leaves room for the JSON envelope and the knob arguments.
 _MAX_REQUEST_BYTES = 64 * 1024
+
+#: Default and maximum number of messages a `history` request returns. The
+#: default is what the panel shows; the cap exists so a caller cannot make the
+#: worker stat thousands of files in one request.
+_DEFAULT_HISTORY = 20
+_MAX_HISTORY = 200
 
 
 def encode(payload: dict) -> bytes:
@@ -445,6 +455,42 @@ def _dispatch(speaker, request: dict) -> tuple[dict, bool]:
         state = speaker.status()
         return {"ok": True, "status": "idle" if state["pending"] == 0 else "busy", **state}, False
 
+    if op == "history":
+        limit = request.get("limit")
+        # A bad limit is not worth an error: the caller asked for a listing, and
+        # a listing with the default size answers the question it really had.
+        if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+            limit = _DEFAULT_HISTORY
+        messages = scan_output(speaker.cfg.output_dir, min(limit, _MAX_HISTORY))
+        return {
+            "ok": True,
+            "messages": messages,
+            "output_dir": str(speaker.cfg.output_dir),
+        }, False
+
+    if op == "replay":
+        message_id = request.get("message_id")
+        if not isinstance(message_id, str) or not message_id.strip():
+            return {
+                "ok": False,
+                "reason": "bad_request",
+                "message": "replay needs a string message_id field.",
+            }, False
+        try:
+            # Shares the speak queue and the stop flag with live speech, so a
+            # replay never overlaps an utterance and `stop` cuts it off too.
+            payload = speaker.replay(message_id.strip())
+        except ToolFault as fault:
+            return {"ok": False, "reason": fault.reason, "message": fault.message, **fault.extra}, False
+        except Exception as exc:  # noqa: BLE001 — one bad request must not kill the worker
+            logger.exception("[worker] replay failed")
+            return {
+                "ok": False,
+                "reason": "worker_error",
+                "message": f"{type(exc).__name__} while queueing the replay (see the log)",
+            }, False
+        return {"ok": True, **payload}, False
+
     if op == "unload":
         # The speaker holds the resident engine; it is the same object the
         # render loop calls, so unloading evicts the model everything uses.
@@ -468,7 +514,7 @@ def _dispatch(speaker, request: dict) -> tuple[dict, bool]:
     return {
         "ok": False,
         "reason": "unknown_op",
-        "message": f"Unknown op {op!r}; expected speak, status, unload, stop or shutdown.",
+        "message": f"Unknown op {op!r}; expected speak, status, history, replay, unload, stop or shutdown.",
     }, False
 
 

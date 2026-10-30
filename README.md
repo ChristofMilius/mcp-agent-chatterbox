@@ -29,16 +29,17 @@ mcp-agent-chatterbox worker-stop     # finish the queue, then exit
 ### How the pieces fit
 
 ```
-LLM / agent
-   │  MCP tool call: speak(text=...)
-   ▼
-MCP server  (mcp_agent_chatterbox.server, cli: `serve`)
-   │  one JSON line per request over TCP 127.0.0.1:8765
-   ▼
-worker      (mcp_agent_chatterbox.worker, cli: `worker`)
-   │  Speaker → ChatterboxEngine → model on the GPU
-   │  render-ahead buffer, then playback in order
-   ▼
+LLM / agent                              browser
+   │  MCP tool call: speak(text=...)        │  buttons: stop / replay / speak
+   ▼                                        ▼
+MCP server (server.py, cli: `serve`)     panel (panel.py, cli: `panel`)
+   └──────────────────┬─────────────────────┘
+                      │  one JSON line per request over TCP 127.0.0.1:8765
+                      ▼
+worker (worker.py, cli: `worker`)
+                      │  Speaker → ChatterboxEngine → model on the GPU
+                      │  render-ahead buffer, then playback in order
+                      ▼
 sentence-batched chunks → tts_output/*.wav → speakers
 ```
 
@@ -47,10 +48,11 @@ over:
 
 - **The `speak` tool is still the way an agent speaks.** The worker does not
   implement MCP and never sees a JSON-RPC frame; it only understands small
-  newline-delimited JSON requests (`speak`, `status`, `unload`, `stop`,
-  `shutdown`). The MCP server is the adapter that turns a tool call into that
-  request. So an agent needs the server *and* the worker; the server alone writes
-  no audio.
+  newline-delimited JSON requests (`speak`, `status`, `history`, `replay`,
+  `unload`, `stop`, `shutdown`). The MCP server is the adapter that turns a tool
+  call into that request, and the panel is a second adapter that turns a button
+  into the same request. So an agent needs the server *and* the worker; the
+  server alone writes no audio, and neither does the panel.
 - **The server holds no model.** It boots in milliseconds and stays responsive
   because there is nothing in it to load. That is deliberate: `tts_status` and
   `list_voices` must answer while a model is still downloading.
@@ -461,14 +463,56 @@ and compatible tools) can consume the same file.
 
 ## The opencode plugin
 
-`.opencode/plugins/tts.js` adds a `speak` tool and a `/speak` command to
-opencode. It **self-replicates** into `~/.config/opencode/plugins/` the first
-time opencode loads it from this repo, so the tool is available in every
-project rather than only sessions started inside this folder.
+`.opencode/plugins/tts.js` installs the repo's commands — `/speak`,
+`/speak-stop` and `/tts-status` — into opencode. It **self-replicates** into
+`~/.config/opencode/plugins/` the first time opencode loads it from this repo,
+and copies every `*.md` in `.opencode/commands/` into the global commands
+directory, so the commands are available in every project rather than only
+sessions started inside this folder. The repo copy is the source of truth; edit
+there, never the global replica. Removing a command from the repo does not
+delete the installed copy — install is not reaping.
 
 The plugin deliberately does not auto-speak assistant replies: loading a model
 costs seconds and VRAM, and unsolicited audio on every turn would be awful.
 Speaking stays an explicit choice, by tool call or by `/speak`.
+
+## The panel
+
+A page with the controls that have no home in a chat window: **Stop**, **Replay
+last**, a play button on every message still on disk, **Unload model**, and a
+text box that speaks what you type. Started on demand, nothing autostarts:
+
+```bash
+uv run mcp-agent-chatterbox panel            # serves http://127.0.0.1:8766/ and opens it
+uv run mcp-agent-chatterbox panel --no-open  # just serve it
+uv run mcp-agent-chatterbox panel --port 9000
+```
+
+It is one HTML file and the standard library's `http.server` — no toolkit to
+install, no build step. It plays no audio itself and holds no state: every
+button is one op forwarded to the resident worker, which owns the queue, the
+model and the output directory. That split is not tidiness, it is what makes
+Stop honest — playback is `winsound`, and `PlaySound(None, SND_PURGE)` stops
+only the calling process's audio, so a panel that played the WAVs itself could
+not be cut off from the worker afterwards.
+
+**Replay is free.** Every message that was ever spoken left its chunks in
+`tts_output/` as `<message_id>_<n>.wav`, so repeating one is a file read, not a
+render: no GPU time, no model load, and it works even after `tts_unload`. A
+replay job goes through the same queue as live speech, so it never talks over an
+utterance that is still rendering, and Stop cuts it off like anything else. The
+files are the history, which also means the list survives a worker restart —
+and that deleting old `tts_output/*.wav` files is how you shorten it.
+
+Two deliberate limits: the panel is bound to `127.0.0.1` (not reachable from
+another machine), and every action requires a custom header that a foreign web
+page cannot set without a CORS preflight this server never approves, plus a
+loopback `Origin` when one is sent. Any page you visit can otherwise POST to a
+localhost port and unload your model.
+
+The page carries no external assets, so it renders the same in a normal browser
+and inside an embedded browser pane. There is no desktop app integration to
+build: it is a URL.
 
 ## Tools
 
@@ -731,6 +775,9 @@ uv run mcp-agent-chatterbox speak "Build finished." --model turbo
 uv run mcp-agent-chatterbox speak "Guten Morgen." --model multilingual --voice <your-clip-name> --language de
 uv run mcp-agent-chatterbox speak "..." --no-play
 
+# the control panel (stop, replay, speak by hand) on http://127.0.0.1:8766/
+uv run mcp-agent-chatterbox panel
+
 # run the server directly
 uv run mcp-agent-chatterbox serve
 ```
@@ -742,7 +789,9 @@ it from anywhere, install a tiny shim — see
 `worker` runs the resident process in the foreground; it loads the model on the
 first utterance and keeps it loaded. `speak` shares the same code path and blocks
 until the queue is drained, so it is the fastest way to check a fresh install
-without involving MCP at all.
+without involving MCP at all. `panel` is the only command that needs no GPU: it
+renders nothing and forwards every action to the worker, so it is also safe to
+leave running while another job owns the VRAM.
 
 ### Install the `mac` shim (to run it from anywhere)
 
