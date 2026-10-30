@@ -43,7 +43,7 @@ dependencies = [
     # perth.PerthImplicitWatermarker = None. The cap never fixed that. It only
     # coincidentally rode along with the resolution that did. Do not restore
     # it; see the README section on what actually goes wrong.
-    "setuptools>=83.0.0",
+    "setuptools>=84.1.0",
 ]
 
 [project.scripts]

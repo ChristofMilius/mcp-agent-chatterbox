@@ -1186,6 +1186,17 @@ Tests stub torch and the Chatterbox classes, so the suite runs in seconds and
 does not touch the network or the GPU. For a real end-to-end check use
 `mcp-agent-chatterbox speak`.
 
+**Dependency advisories.** Dependabot reports against everything in `uv.lock`,
+including packages nobody imports. The bulk of the open alerts is **Pillow**,
+reached only through `chatterbox-tts -> gradio`: neither this project's code nor
+chatterbox's runtime modules (`tts`, `vc`, `mtl_tts`) import `gradio`, `PIL` or
+`diffusers`, and the advisories are all image decoders we never call. Pillow
+therefore stays at the version its parent permits (`gradio` pins `pillow<13`),
+because forcing 13 would swap an unreachable advisory for a dependency that
+declares the opposite. Revisit when gradio lifts that cap. The rest — `brotli`,
+`filelock`, `msgpack`, `opentelemetry-api`, `setuptools`, `virtualenv` — is
+bumped past its first patched version and pinned by the lock, not by us.
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Chatterbox itself is MIT, © Resemble AI.
