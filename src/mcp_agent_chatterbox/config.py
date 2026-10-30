@@ -192,8 +192,10 @@ class Config:
         raw_hf_home = os.getenv("CHATTERBOX_HF_HOME", "").strip()
         self.hf_home: Path | None = _resolve_path(raw_hf_home) if raw_hf_home else None
 
-        #: Default model key when a speak() call does not name one.
-        self.model: str = os.getenv("CHATTERBOX_MODEL", "turbo").strip().lower()
+        #: Default model key when a speak() call does not name one. nano is the
+        #: house default (server.INSTRUCTIONS calls it the preferred model):
+        #: turbo's quality at a third of the size.
+        self.model: str = os.getenv("CHATTERBOX_MODEL", "nano").strip().lower()
 
         #: Default reference clip (name in the voices dir) when a speak()
         #: call names neither voice= nor reference_clip=. Empty means no

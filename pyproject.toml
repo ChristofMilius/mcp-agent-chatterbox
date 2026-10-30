@@ -1,7 +1,7 @@
 [project]
 name = "mcp-agent-chatterbox"
 version = "0.1.0"
-description = "MCP server for local GPU-accelerated text-to-speech with Chatterbox - turbo, multilingual, and zero-shot voice cloning."
+description = "MCP server for local GPU-accelerated text-to-speech with Chatterbox - nano, turbo, multilingual, and zero-shot voice cloning."
 readme = "README.md"
 authors = [
     { name = "Christof Milius" }

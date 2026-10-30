@@ -95,8 +95,8 @@ timings, errors) is served afterwards by `tts_status` under `worker.last`.
 
 | Key | Params | Languages | Reference clip | Notes |
 |---|---|---|---|---|
-| `turbo` | 350M | English | **not needed** | Default. Fastest, lowest VRAM. Built-in voice. Understands paralinguistic tokens inline: `[laugh]`, `[chuckle]`, `[whispering]`, `[clear throat]`, `[shush]`, and 14 more (exact set: `TURBO_TAGS` in `registry.py`). |
-| `nano` | 110M | English | **not needed** | Turbo's small sibling: same architecture, single-step decoder, tags and built-in voice, tightest latency/memory budget (also runs on CPU). |
+| `nano` | 110M | English | **not needed** | **Default.** Turbo's small sibling: same architecture, single-step decoder, tags and built-in voice, tightest latency/memory budget (also runs on CPU). |
+| `turbo` | 350M | English | **not needed** | Nano's bigger sibling: same architecture, tags and built-in voice, more VRAM headroom. Understands paralinguistic tokens inline: `[laugh]`, `[chuckle]`, `[whispering]`, `[clear throat]`, `[shush]`, and 14 more (exact set: `TURBO_TAGS` in `registry.py`). |
 | `multilingual` | 500M | 23 (incl. German) | **required** | `language="de"`, `en`, `fr`, … `t3_model="v2"` (default) or `"v3"`. |
 | `original` | 500M | English | **required** | The CFG / exaggeration-tuning model, for delivery style control. |
 
@@ -326,10 +326,10 @@ long-running server does not — check `.env`, and the server's startup log line
 when hunting this. The ready line records which config file was read.
 
 **Corollary for `nano`.** Because `nano` is a separate HF repo, switching
-`CHATTERBOX_MODEL` from `turbo` to `nano` (or back) is a **fresh download**, not
-a reuse of an already-cached sibling. A machine with turbo cached still pays a
-full nano fetch the first time — into whichever cache root is actually in
-effect, so get the cache path right *before* that first nano call.
+`CHATTERBOX_MODEL` between `nano` and `turbo` (either direction) is a **fresh
+download**, not a reuse of an already-cached sibling. A machine with turbo cached
+still pays a full nano fetch the first time — into whichever cache root is
+actually in effect, so get the cache path right *before* that first nano call.
 
 ## Registering the MCP server
 
@@ -532,7 +532,7 @@ start one. It never falls back to synthesizing in the server process.
 | Parameter | Default | Meaning |
 |---|---|---|
 | `text` | — | What to say. Required. |
-| `model` | `turbo` | `turbo` \| `nano` \| `multilingual` \| `original` |
+| `model` | `nano` | `nano` \| `turbo` \| `multilingual` \| `original` |
 | `voice` | server setting (`CHATTERBOX_VOICE`) | Reference clip name in the voices dir (filename without extension). Required for multilingual/original |
 | `reference_clip` | — | Path to a wav/mp3/flac, as an alternative to `voice` |
 | `language` | — | ISO 639-1 code, multilingual only |
@@ -964,7 +964,7 @@ No secrets are involved.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `CHATTERBOX_MODEL` | `turbo` | Model used when `speak` names none |
+| `CHATTERBOX_MODEL` | `nano` | Model used when `speak` names none |
 | `CHATTERBOX_VOICE` | unset | Default reference clip (name in the voices dir) used when a `speak` call names neither `voice=` nor `reference_clip=`. Skips the tool-level `reference_clip_required` for multilingual/original, and applies to turbo/nano too. A name that does not exist fails fast with `voice_not_found` — never a silent substitution |
 | `CHATTERBOX_DEVICE` | `auto` | `auto` \| `cpu` \| `cuda` \| `cuda:N` |
 | `CHATTERBOX_GPU_INDEX` | unset | Pin a CUDA ordinal. Overrides the `auto` heuristic |

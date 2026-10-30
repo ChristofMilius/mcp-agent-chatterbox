@@ -21,7 +21,7 @@ _BASE = Path(__file__).resolve().parent.parent
 class TestDefaults:
     def test_sensible_defaults(self):
         c = Config()
-        assert c.model == "turbo"
+        assert c.model == "nano"
         assert c.voice == ""
         assert c.device == "auto"
         assert c.gpu_index is None

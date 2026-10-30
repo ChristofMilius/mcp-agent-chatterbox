@@ -262,7 +262,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="mcp-agent-chatterbox",
         description=(
             "MCP server for local GPU-accelerated text-to-speech with Chatterbox "
-            "(turbo, multilingual, zero-shot voice cloning)."
+            "(nano, turbo, multilingual, zero-shot voice cloning)."
         ),
     )
     parser.add_argument("--version", action="version", version=__version__)
@@ -319,7 +319,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_speak = sub.add_parser("speak", help="Synthesize one utterance and save/play it.")
     p_speak.add_argument("text", help="Text to speak.")
-    p_speak.add_argument("--model", default=None, help="turbo | multilingual | original")
+    p_speak.add_argument(
+        "--model", default=None, help="nano | turbo | multilingual | original"
+    )
     p_speak.add_argument("--voice", default=None, help="Reference clip name in the voices dir.")
     p_speak.add_argument("--reference-clip", default=None, help="Path to a reference clip.")
     p_speak.add_argument("--language", default=None, help="ISO 639-1 code (multilingual only).")

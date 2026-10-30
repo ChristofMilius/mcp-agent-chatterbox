@@ -22,14 +22,14 @@ playing regardless of what the harness does with this process. The finished
 record is served afterwards by tts_status under worker.last.
 
 Model selection:
-  * model="turbo" (default) speaks with no reference clip and understands
+  * model="nano" (default) speaks with no reference clip and understands
     paralinguistic tokens inline in the text — the tags nano/turbo really
     contain in their vocabulary are the 19 in registry.TURBO_TAGS, e.g.
     [laugh], [chuckle], [sigh], [gasp], [whispering] (NOT [whisper]) and
     [clear throat] (with the space). Brackets that the target model cannot
     tokenise are not tags and are dropped before rendering.
-  * model="nano" is turbo's 110M sibling — same architecture, tags and
-    built-in voice, tightest latency/memory budget (also CPU-capable).
+  * model="turbo" is nano's 350M sibling — same architecture, tags and
+    built-in voice, more VRAM headroom.
   * model="multilingual" needs voice=/reference_clip= and accepts language=
     as an ISO 639-1 code.
   * model="original" needs voice=/reference_clip= and is the English
