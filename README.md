@@ -509,6 +509,15 @@ the GPU has been lent to ComfyUI or a game. Starting a worker loads no model —
 it is an idle listener until something speaks — so borrowing the toggle costs no
 VRAM, and the worker stays detached: quitting the panel does not stop it.
 
+**A cold start says so.** The first utterance after a worker start or an unload
+has to read the weights before it can make a sound, which used to look like a
+queued job that never spoke. The pill reads `loading model…`, the detail line
+names the model being loaded, and the queue line still shows the job waiting —
+so the wait is explained rather than merely endured. Measured on this machine a
+full cold start (torch import included) is around 45 s; a reload after an unload
+in a worker that already imported torch is much quicker, so the page promises no
+number.
+
 **Replay is free.** Every message that was ever spoken left its chunks in
 `tts_output/` as `<message_id>_<n>.wav`, so repeating one is a file read, not a
 render: no GPU time, no model load, and it works even after `tts_unload`. A
@@ -669,7 +678,11 @@ hardware.
 Readiness without loading anything: whether the worker is running, the models
 available, the configured default voice (`CHATTERBOX_VOICE`), the multilingual
 language list, and the tags turbo understands. When the worker is up it also
-reports its resolved device, free VRAM per GPU and the speech queue. When it is
+reports its resolved device, free VRAM per GPU, the speech queue, and the model's
+load state — `model.loaded`, `model.name`, and `model.loading`, which names the
+model being read from disk right now. That last field is what makes a cold start
+visible: the first utterance after a start or an unload spends its opening
+seconds loading weights, and without it the only symptom is silence. When it is
 down, `worker_running` is `false` and `worker_note` says what to do — the rest of
 the response is still accurate, which is what you want when the missing piece is
 the worker itself.

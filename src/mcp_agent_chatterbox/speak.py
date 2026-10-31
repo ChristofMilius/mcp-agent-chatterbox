@@ -867,12 +867,22 @@ class Speaker:
         }
 
     def status(self) -> dict:
-        """Queue depth and the most recent completed job, for tts_status."""
+        """Queue depth, the most recent job, and the model's load state."""
         with self._guard:
             pending = self._pending
             active = self._current.message_id if self._current is not None else None
             last = dict(self._last) if self._last is not None else None
-        return {"pending": pending, "active": active, "last": last}
+        # Read outside the queue lock: the engine has its own lock, and holding
+        # this one across an engine call would invite a lock-order deadlock.
+        # getattr keeps this working for the fake engines the tests use.
+        engine = getattr(self, "engine", None)
+        is_loaded = getattr(engine, "is_loaded", None)
+        model = {
+            "loaded": bool(is_loaded()) if callable(is_loaded) else False,
+            "loading": getattr(engine, "loading_model", None),
+            "name": getattr(engine, "loaded_model", None),
+        }
+        return {"pending": pending, "active": active, "last": last, "model": model}
 
     # -- worker ---------------------------------------------------------------
     def _ensure_worker(self) -> None:

@@ -1000,3 +1000,42 @@ class TestChunking:
         for call in fake_engine.calls:
             assert call["temperature"] == 0.9
             assert call["exaggeration"] == 0.4
+
+
+class ModelStateEngine:
+    """A fake engine that only knows what status() asks it about the model."""
+
+    def __init__(self, *, loaded: bool, loading: str | None, name: str | None = None) -> None:
+        self._loaded = loaded
+        self.loading_model = loading
+        self.loaded_model = name
+
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+
+class TestStatusReportsModelState:
+    """
+    status() is what the panel and tts_status poll, so it has to carry the model
+    state: without it a cold start reads as a queued job that makes no sound.
+    """
+
+    def test_a_cold_start_is_visible(self, cfg):
+        speaker = Speaker(cfg, ModelStateEngine(loaded=False, loading="nano"))
+        assert speaker.status()["model"] == {"loaded": False, "loading": "nano", "name": None}
+
+    def test_a_loaded_model_is_reported(self, cfg):
+        speaker = Speaker(cfg, ModelStateEngine(loaded=True, loading=None, name="nano"))
+        assert speaker.status()["model"] == {"loaded": True, "loading": None, "name": "nano"}
+
+    def test_an_engine_without_model_state_does_not_break_the_poll(self, cfg):
+        # Tests and embedders pass engines with no model notion at all; a status
+        # poll must still answer rather than raise inside the panel's request.
+        class Bare:
+            pass
+
+        assert Speaker(cfg, Bare()).status()["model"] == {
+            "loaded": False,
+            "loading": None,
+            "name": None,
+        }

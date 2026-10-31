@@ -537,3 +537,26 @@ class TestReferenceDtypeShim:
 
         assert isinstance(out, torch.Tensor)
         assert out.dtype == torch.float32
+
+
+class TestLoadState:
+    """
+    Status must show a load while it is happening.
+
+    A cold start is several seconds in which a queued job produces no sound; the
+    panel polls status() precisely then, so the flag has to be live and has to
+    clear itself even when the load fails.
+    """
+
+    def test_no_load_is_reported_while_idle(self, monkeypatch):
+        engine = engine_with(monkeypatch)
+        assert engine.loading_model is None
+        assert engine.status()["model_loading"] is None
+
+    def test_a_failed_load_does_not_leave_the_flag_stuck(self, monkeypatch):
+        engine = engine_with(monkeypatch)
+        monkeypatch.setattr(engine_module, "_has_wheel", lambda name: False)
+        with pytest.raises(ToolFault):
+            engine.load("nano")
+        assert engine.loading_model is None
+        assert engine.status()["model_loading"] is None

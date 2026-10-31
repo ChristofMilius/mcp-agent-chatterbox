@@ -128,6 +128,9 @@ class ChatterboxEngine:
         self.cfg = cfg or Config()
         self._device: str | None = None
         self._loaded_key: _CACHE_KEY | None = None
+        #: Model key being loaded right now, or None. Read by status() so a cold
+        #: start is visible while it happens, not only after it finishes.
+        self._loading: str | None = None
         # Guards the resident-model critical section: load / evict / generate.
         #
         # This is invisible over stdio, where the MCP transport serialises one
@@ -241,6 +244,11 @@ class ChatterboxEngine:
     def loaded_model(self) -> str | None:
         return self._loaded_key[0] if self._loaded_key else None
 
+    @property
+    def loading_model(self) -> str | None:
+        """Model key being loaded right now, or None. Cheap to poll."""
+        return self._loading
+
     def status(self) -> dict:
         """Report runtime readiness without loading any weights."""
         chatterbox_ok = _has_wheel("chatterbox")
@@ -320,6 +328,7 @@ class ChatterboxEngine:
             "strict_vram": self.cfg.strict_vram,
             "model_loaded": self.is_loaded(),
             "loaded_model": self.loaded_model,
+            "model_loading": self.loading_model,
             "max_resident_models": MAX_RESIDENT,
             "autoplay": self.cfg.autoplay,
             "player_available": player_available(),
@@ -397,49 +406,57 @@ class ChatterboxEngine:
             self._device = self._device or self.resolve_device()
             return _MODEL_CACHE[key], self._device, spec
 
-        if not _has_wheel("chatterbox") or not _has_wheel("torch"):
-            raise ToolFault(
-                "dependencies_missing",
-                "chatterbox-tts / torch are not importable — run `uv sync` in the "
-                "mcp-agent-chatterbox project.",
-            )
-
-        device = self.resolve_device()
-        self._preflight(device)
-
-        self._evict_others(key)
-
-        _apply_hf_home(self.cfg.hf_home)
-        model_cls = load_model_class(spec)
-        logger.info(
-            "[engine] loading %s on %s (first use; weights download once, then cached on disk)",
-            spec.key,
-            device,
-        )
-        started = time.perf_counter()
+        # Recorded only for status(): a cold start is several seconds in which
+        # the panel and tts_status would otherwise show a queued job and no
+        # reason for the wait. Cleared in the finally, so a failed load cannot
+        # leave the flag stuck on.
+        self._loading = spec.key
         try:
-            load_kwargs = dict(spec.load_kwargs)
-            if t3_model:
-                load_kwargs["t3_model"] = t3_model
-            model = model_cls.from_pretrained(device=device, **load_kwargs)
-        except Exception as exc:  # noqa: BLE001
-            logger.error("[engine] %s load failed: %s", spec.key, exc, exc_info=True)
-            self._raise_load_failure(spec, exc, device)
-        elapsed = time.perf_counter() - started
+            if not _has_wheel("chatterbox") or not _has_wheel("torch"):
+                raise ToolFault(
+                    "dependencies_missing",
+                    "chatterbox-tts / torch are not importable — run `uv sync` in the "
+                    "mcp-agent-chatterbox project.",
+                )
 
-        if hasattr(model, "norm_loudness"):
-            model.norm_loudness = _harden_reference_dtype(model.norm_loudness)
+            device = self.resolve_device()
+            self._preflight(device)
 
-        _MODEL_CACHE[key] = model
-        self._loaded_key = key
-        logger.info(
-            "[engine] %s ready in %.1fs (device=%s, free VRAM now %s MiB)",
-            spec.key,
-            elapsed,
-            device,
-            self.free_vram_mb(),
-        )
-        return model, device, spec
+            self._evict_others(key)
+
+            _apply_hf_home(self.cfg.hf_home)
+            model_cls = load_model_class(spec)
+            logger.info(
+                "[engine] loading %s on %s (first use; weights download once, then cached on disk)",
+                spec.key,
+                device,
+            )
+            started = time.perf_counter()
+            try:
+                load_kwargs = dict(spec.load_kwargs)
+                if t3_model:
+                    load_kwargs["t3_model"] = t3_model
+                model = model_cls.from_pretrained(device=device, **load_kwargs)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("[engine] %s load failed: %s", spec.key, exc, exc_info=True)
+                self._raise_load_failure(spec, exc, device)
+            elapsed = time.perf_counter() - started
+
+            if hasattr(model, "norm_loudness"):
+                model.norm_loudness = _harden_reference_dtype(model.norm_loudness)
+
+            _MODEL_CACHE[key] = model
+            self._loaded_key = key
+            logger.info(
+                "[engine] %s ready in %.1fs (device=%s, free VRAM now %s MiB)",
+                spec.key,
+                elapsed,
+                device,
+                self.free_vram_mb(),
+            )
+            return model, device, spec
+        finally:
+            self._loading = None
 
     def _raise_load_failure(self, spec: ModelSpec, exc: Exception, device: str) -> NoReturn:
         """Turn a load failure into an actionable ToolFault where possible."""

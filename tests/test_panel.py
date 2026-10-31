@@ -97,6 +97,12 @@ class TestPage:
         assert "Replay last" in body
         assert "<!doctype html>" in body.lower()
 
+    def test_the_page_says_when_the_model_is_loading(self, panel):
+        # A cold start is seconds of silence that used to read as "speaking";
+        # the page has to be able to name it.
+        _status, body = get(panel.base, "/")
+        assert "loading model…" in body
+
     def test_the_page_needs_no_network(self, panel):
         # An embedded browser pane may have no network at all, and a CDN asset
         # would silently leave the page unstyled or dead.

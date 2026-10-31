@@ -23,11 +23,15 @@
     font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
   }
   h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
-  header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
   .pill {
     padding: 2px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
     border: 1px solid var(--line); color: var(--muted);
+    /* A long detail line must not squeeze these two into two rows. */
+    flex: 0 0 auto; white-space: nowrap;
   }
+  #worker { flex: 0 0 auto; white-space: nowrap; }
+  #detail { flex: 1 1 20ch; min-width: 0; }
   .pill.busy { color: var(--warn); border-color: var(--warn); }
   .pill.idle { color: var(--ok); border-color: var(--ok); }
   .pill.off  { color: var(--bad); border-color: var(--bad); }
@@ -179,22 +183,44 @@ function renderHistory(messages) {
 function applyState(state) {
   const worker = state.worker || {};
   const pill = $("pill");
+  const model = worker.model || {};
+  const loading = model.loading || null;
   const pending = worker.pending || 0;
   const busy = pending > 0;
-  pill.textContent = busy ? "speaking" : "idle";
-  pill.className = "pill " + (busy ? "busy" : "idle");
+  // Loading outranks speaking: a cold start is a queued job that makes no
+  // sound, so calling it "speaking" hides the wait this line exists to show.
+  if (loading) {
+    pill.textContent = "loading model…";
+    pill.className = "pill busy";
+  } else {
+    pill.textContent = busy ? "speaking" : "idle";
+    pill.className = "pill " + (busy ? "busy" : "idle");
+  }
   $("worker").textContent = "Stop worker";
   $("worker").dataset.running = "1";
   $("queue").textContent = busy
     ? pending + " job" + (pending === 1 ? "" : "s") + " queued" +
       (worker.active ? " · now: " + worker.active : "")
     : "";
+  const notes = [];
+  if (loading) {
+    // No duration promised: a cold start measured 44 s here (torch import plus
+    // weights), and a warm reload of an unloaded model is far quicker.
+    notes.push(
+      "loading " + loading + " · the first utterance after a start or unload must read the weights"
+    );
+  } else if (model.loaded === false) {
+    notes.push("model not loaded · the next utterance loads it first");
+  }
   const last = worker.last;
-  $("detail").textContent = last
-    ? "last: " + last.chunks + " chunk" + (last.chunks === 1 ? "" : "s") +
-      (last.duration_s ? " · " + last.duration_s + "s audio" : "") +
-      (last.max_gap_s ? " · worst gap " + last.max_gap_s + "s" : "")
-    : "";
+  if (last) {
+    notes.push(
+      "last: " + last.chunks + " chunk" + (last.chunks === 1 ? "" : "s") +
+        (last.duration_s ? " · " + last.duration_s + "s audio" : "") +
+        (last.max_gap_s ? " · worst gap " + last.max_gap_s + "s" : "")
+    );
+  }
+  $("detail").textContent = notes.join(" · ");
   $("outdir").textContent = state.output_dir || "";
   renderHistory(state.messages || []);
 }
