@@ -7,7 +7,7 @@
 <!--
   One file, no external assets, on purpose: the page has to render the same in a
   normal browser and inside an embedded webview (an editor or agent app's browser
-  pane), and neither a CDN font nor a bundle is worth that risk for six buttons.
+  pane), and neither a CDN font nor a bundle is worth that risk for five buttons.
   Every action is a POST to the panel process, which forwards it to the resident
   worker; nothing here touches audio directly.
 -->
@@ -72,13 +72,14 @@
 <header>
   <h1>Chatterbox</h1>
   <span id="pill" class="pill">connecting…</span>
+  <button id="worker" class="danger" title="Start or stop the resident worker process">Start worker</button>
   <span id="detail" class="muted"></span>
 </header>
 
 <section>
   <h2>Playback</h2>
   <div class="row">
-    <button id="stop" class="danger">Stop</button>
+    <button id="stop" class="danger">Stop playback</button>
     <button id="replay-last">Replay last</button>
     <button id="unload" class="danger">Unload model</button>
     <span id="queue" class="muted"></span>
@@ -182,6 +183,8 @@ function applyState(state) {
   const busy = pending > 0;
   pill.textContent = busy ? "speaking" : "idle";
   pill.className = "pill " + (busy ? "busy" : "idle");
+  $("worker").textContent = "Stop worker";
+  $("worker").dataset.running = "1";
   $("queue").textContent = busy
     ? pending + " job" + (pending === 1 ? "" : "s") + " queued" +
       (worker.active ? " · now: " + worker.active : "")
@@ -209,6 +212,8 @@ async function refresh() {
     lastState = null;
     $("pill").textContent = "worker offline";
     $("pill").className = "pill off";
+    $("worker").textContent = "Start worker";
+    delete $("worker").dataset.running;
     $("detail").textContent = "";
     $("queue").textContent = "";
     $("stop").disabled = true;
@@ -243,6 +248,20 @@ $("replay-last").addEventListener("click", () => {
 });
 $("unload").addEventListener("click", () => {
   if (confirm("Unload the resident model and free its VRAM?")) act("model unloaded", "/api/unload");
+});
+$("worker").addEventListener("click", () => {
+  if ($("worker").dataset.running !== "1") {
+    // Starting imports torch before the worker can answer, so say something
+    // now rather than leaving the button silent for several seconds.
+    say("starting the worker…");
+    act("worker started", "/api/worker/start");
+    return;
+  }
+  // No confirm on purpose: a toggle should toggle. The worker drains its queue
+  // before exiting, so this cannot truncate speech, and the same button starts
+  // it again.
+  say("stopping the worker…");
+  act("worker stopped", "/api/worker/stop");
 });
 $("speak").addEventListener("click", () => {
   const text = $("text").value.trim();

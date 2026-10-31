@@ -29,6 +29,17 @@ left its chunks on disk, so replaying one costs a file read. Replay jobs go
 through the worker's queue, so a replay never overlaps speech that is still
 rendering, and Stop cuts it off like any other utterance.
 
+Starting and stopping the worker
+--------------------------------
+The panel can also start the resident worker and ask it to exit, because both
+are needed to hand the GPU to something else (ComfyUI, a game) and get it back
+without a terminal. Starting uses `worker.spawn`, which is detached, so the
+worker still outlives the panel that launched it. Stopping sends the `shutdown`
+op — not `stop`, which means "stop the audio that is playing". Neither action
+loads a model: the worker is an idle listener until something speaks, so the
+panel still owns no GPU state. Both sit behind the same action guard, which
+matters more here than anywhere else: these two are process-level.
+
 Binding and the guard
 ---------------------
 The socket is bound to 127.0.0.1, so it is not reachable from another machine.
@@ -50,7 +61,12 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from mcp_agent_chatterbox.config import DEFAULT_WORKER_PORT
-from mcp_agent_chatterbox.worker import WorkerUnavailable, send_request
+from mcp_agent_chatterbox.worker import (
+    WorkerUnavailable,
+    send_request,
+    spawn,
+    wait_until_ready,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +89,11 @@ _MAX_BODY = 64 * 1024
 #: Hostnames that count as "this machine" for the Origin check.
 _LOOPBACK = {"127.0.0.1", "localhost", "::1"}
 
+#: How long a start request waits for the worker to answer. The worker imports
+#: torch before it can answer `status`, so this is generous but bounded; the
+#: request blocks on it rather than answering "started" before it is true.
+_START_TIMEOUT_S = 30.0
+
 
 def page_html() -> str:
     """The panel page, read from the package data file next to this module."""
@@ -91,7 +112,8 @@ class PanelServer(ThreadingHTTPServer):
 
 class PanelHandler(BaseHTTPRequestHandler):
     """
-    Routes for the page. Every action is forwarded to the worker unchanged.
+    Routes for the page. Voice actions are forwarded to the worker unchanged;
+    the two worker-lifecycle routes act on the process itself.
 
     The handler holds no state of its own: the worker owns the queue, the model
     and the output directory, so a panel restart loses nothing but the page.
@@ -131,6 +153,10 @@ class PanelHandler(BaseHTTPRequestHandler):
             self._forward({"op": "stop"})
         elif path == "/api/unload":
             self._forward({"op": "unload"})
+        elif path == "/api/worker/start":
+            self._start_worker()
+        elif path == "/api/worker/stop":
+            self._stop_worker()
         else:
             self._json(
                 404, {"ok": False, "reason": "not_found", "message": f"No route for {path}."}
@@ -186,6 +212,62 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         status = 200 if response.get("ok") else 409
         self._json(status, response)
+
+    # -- worker lifecycle -----------------------------------------------------
+    def _start_worker(self) -> None:
+        """
+        Start a detached worker, unless one is already answering.
+
+        Idempotent on purpose: the button is a toggle, so a double click — or a
+        click on a label that is one poll behind — must not start a second
+        worker that cannot bind the port and dies with a confusing error.
+        """
+        if self._worker_answers():
+            self._json(200, {"ok": True, "status": "already_running"})
+            return
+        try:
+            spawn(port=self.worker_port)
+        except OSError as exc:
+            self._json(
+                500,
+                {
+                    "ok": False,
+                    "reason": "spawn_failed",
+                    "message": f"Could not start the worker: {exc}",
+                },
+            )
+            return
+        if wait_until_ready(self.worker_port, timeout=_START_TIMEOUT_S):
+            self._json(200, {"ok": True, "status": "started"})
+            return
+        self._json(
+            503,
+            {
+                "ok": False,
+                "reason": "worker_start_timeout",
+                "message": (
+                    f"A worker was started but did not answer on port {self.worker_port} "
+                    f"within {_START_TIMEOUT_S:.0f}s."
+                ),
+            },
+        )
+
+    def _stop_worker(self) -> None:
+        """
+        Ask the worker to drain its queue and exit.
+
+        `shutdown`, not `stop`: the latter cuts off playback and leaves the
+        process (and its port) alive, which is not what "Stop worker" means.
+        The worker exits by itself, so there is no pid for the panel to kill.
+        """
+        self._forward({"op": "shutdown"})
+
+    def _worker_answers(self) -> bool:
+        """True when a worker is up and answering, not merely that a port is bound."""
+        try:
+            return bool(send_request({"op": "status"}, port=self.worker_port).get("ok"))
+        except WorkerUnavailable:
+            return False
 
     # -- plumbing -------------------------------------------------------------
     def _guard(self) -> bool:

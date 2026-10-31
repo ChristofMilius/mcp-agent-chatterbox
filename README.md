@@ -30,7 +30,7 @@ mcp-agent-chatterbox worker-stop     # finish the queue, then exit
 
 ```
 LLM / agent                              browser
-   │  MCP tool call: speak(text=...)        │  buttons: stop / replay / speak
+   │  MCP tool call: speak(text=...)        │  buttons: stop / replay / speak / worker
    ▼                                        ▼
 MCP server (server.py, cli: `serve`)     panel (panel.py, cli: `panel`)
    └──────────────────┬─────────────────────┘
@@ -478,9 +478,10 @@ Speaking stays an explicit choice, by tool call or by `/speak`.
 
 ## The panel
 
-A page with the controls that have no home in a chat window: **Stop**, **Replay
-last**, a play button on every message still on disk, **Unload model**, and a
-text box that speaks what you type. Started on demand, nothing autostarts:
+A page with the controls that have no home in a chat window: **Stop playback**,
+**Replay last**, a play button on every message still on disk, **Unload model**,
+a **Start worker / Stop worker** toggle in the header, and a text box that speaks
+what you type. Started on demand, nothing autostarts:
 
 ```bash
 uv run mcp-agent-chatterbox panel            # serves http://127.0.0.1:8766/ and opens it
@@ -489,19 +490,31 @@ uv run mcp-agent-chatterbox panel --port 9000
 ```
 
 It is one HTML file and the standard library's `http.server` — no toolkit to
-install, no build step. It plays no audio itself and holds no state: every
+install, no build step. It plays no audio itself and holds no state: every voice
 button is one op forwarded to the resident worker, which owns the queue, the
-model and the output directory. That split is not tidiness, it is what makes
+model and the output directory. The two lifecycle buttons are the exception —
+they call `worker.spawn()` and send the `shutdown` op — but they still own no
+model, so the split holds. That split is not tidiness, it is what makes
 Stop honest — playback is `winsound`, whose sound belongs to the thread that
 started it, so only the worker's own playback thread can cut a chunk short. A
 panel that played the WAVs itself would be uncancellable from the worker, and
-Stop would only land between chunks.
+pressing Stop playback would only land between chunks.
+
+Three different things can be stopped, so the panel names them separately:
+**Stop playback** cuts the sound, **Unload model** releases the model's VRAM but
+keeps the worker running (the next utterance reloads from disk in seconds), and
+**Stop worker** drains the queue and exits the process. The header toggle reads
+*Start worker* whenever no worker answers, so the page can bring one back after
+the GPU has been lent to ComfyUI or a game. Starting a worker loads no model —
+it is an idle listener until something speaks — so borrowing the toggle costs no
+VRAM, and the worker stays detached: quitting the panel does not stop it.
 
 **Replay is free.** Every message that was ever spoken left its chunks in
 `tts_output/` as `<message_id>_<n>.wav`, so repeating one is a file read, not a
 render: no GPU time, no model load, and it works even after `tts_unload`. A
 replay job goes through the same queue as live speech, so it never talks over an
-utterance that is still rendering, and Stop cuts it off like anything else. The
+utterance that is still rendering, and Stop playback cuts it off like anything
+else. The
 files are the history, which also means the list survives a worker restart —
 and that deleting old `tts_output/*.wav` files is how you shorten it.
 
@@ -515,10 +528,10 @@ The page carries no external assets, so it renders the same in a normal browser
 and inside an embedded browser pane. There is no desktop app integration to
 build: it is a URL.
 
-**Stop cuts the sound, not just the queue.** A blocking play starts the WAV
-asynchronously and waits in its own thread, checking a stop flag every 20 ms, so
-pressing Stop silences the current chunk instead of waiting for it to end. A
-stopped chunk counts as played rather than as a playback error.
+**Stop playback cuts the sound, not just the queue.** A blocking play starts the
+WAV asynchronously and waits in its own thread, checking a stop flag every 20 ms,
+so pressing Stop playback silences the current chunk instead of waiting for it to
+end. A stopped chunk counts as played rather than as a playback error.
 
 Further improvements to this web-based panel are **envisioned** — per-message
 deletion, a progress bar for the chunk being spoken, a compact layout for narrow
@@ -786,7 +799,8 @@ uv run mcp-agent-chatterbox speak "Build finished." --model turbo
 uv run mcp-agent-chatterbox speak "Guten Morgen." --model multilingual --voice <your-clip-name> --language de
 uv run mcp-agent-chatterbox speak "..." --no-play
 
-# the control panel (stop, replay, speak by hand) on http://127.0.0.1:8766/
+# the control panel (stop playback, replay, speak by hand, start/stop the worker)
+# on http://127.0.0.1:8766/
 uv run mcp-agent-chatterbox panel
 
 # run the server directly

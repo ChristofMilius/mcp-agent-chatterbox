@@ -187,6 +187,63 @@ class TestGuard:
         assert status == 200
 
 
+class TestWorkerLifecycle:
+    """
+    Starting and stopping the worker process itself.
+
+    These are the only routes that are not a plain relay, so they need their own
+    contract: "Stop worker" must ask the worker to exit rather than cut off the
+    audio, and a start must not leave a second process fighting for the port.
+    """
+
+    def test_stop_worker_sends_shutdown_rather_than_stop(self, panel):
+        status, _body = post(panel.base, "/api/worker/stop")
+        assert status == 200
+        assert panel.calls[-1] == {"op": "shutdown"}
+
+    def test_stopping_a_missing_worker_is_a_503(self, panel):
+        panel.replies["shutdown"] = WorkerUnavailable("down")
+        status, body = post(panel.base, "/api/worker/stop")
+        assert status == 503
+        assert body["reason"] == "worker_not_running"
+
+    def test_starting_an_already_running_worker_spawns_nothing(self, panel, monkeypatch):
+        spawned: list[int] = []
+        monkeypatch.setattr(
+            "mcp_agent_chatterbox.panel.spawn", lambda **kwargs: spawned.append(kwargs["port"])
+        )
+        status, body = post(panel.base, "/api/worker/start")
+        assert status == 200
+        assert body["status"] == "already_running"
+        assert spawned == []
+
+    def test_starting_a_missing_worker_spawns_and_waits_for_it(self, panel, monkeypatch):
+        panel.replies["status"] = WorkerUnavailable("no worker listening")
+        spawned: list[int] = []
+        monkeypatch.setattr(
+            "mcp_agent_chatterbox.panel.spawn", lambda **kwargs: spawned.append(kwargs["port"])
+        )
+        monkeypatch.setattr(
+            "mcp_agent_chatterbox.panel.wait_until_ready", lambda port, timeout=0: True
+        )
+        status, body = post(panel.base, "/api/worker/start")
+        assert status == 200
+        assert body["status"] == "started"
+        assert spawned == [8765]
+
+    def test_a_worker_that_never_answers_is_not_reported_as_started(self, panel, monkeypatch):
+        # Answering "started" while the worker is still importing torch would
+        # make the toggle show "Stop worker" for a process that cannot speak.
+        panel.replies["status"] = WorkerUnavailable("no worker listening")
+        monkeypatch.setattr("mcp_agent_chatterbox.panel.spawn", lambda **kwargs: None)
+        monkeypatch.setattr(
+            "mcp_agent_chatterbox.panel.wait_until_ready", lambda port, timeout=0: False
+        )
+        status, body = post(panel.base, "/api/worker/start")
+        assert status == 503
+        assert body["reason"] == "worker_start_timeout"
+
+
 class TestRouting:
     def test_unknown_get_is_404(self, panel):
         status, _body = get(panel.base, "/nope")
