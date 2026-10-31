@@ -518,6 +518,14 @@ full cold start (torch import included) is around 45 s; a reload after an unload
 in a worker that already imported torch is much quicker, so the page promises no
 number.
 
+**Unloading is reported, not confirmed.** The header pill reads
+`unloading model…` while the request is out, and once the weights are gone the
+detail line keeps the price paid — `model not loaded · last unload freed 2396 MB
+· the next utterance loads it first` — until they are resident again. No action
+in this page opens a modal: every one of them is cheap and reversible, so a
+dialog would only interrupt the page that describes the state. Judge a model
+load by consequence, not by ceremony.
+
 **Replay is free.** Every message that was ever spoken left its chunks in
 `tts_output/` as `<message_id>_<n>.wav`, so repeating one is a file read, not a
 render: no GPU time, no model load, and it works even after `tts_unload`. A

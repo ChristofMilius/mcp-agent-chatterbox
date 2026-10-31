@@ -112,6 +112,12 @@
 const ACTION_HEADER = "X-Chatterbox";
 const $ = (id) => document.getElementById(id);
 let lastState = null;
+//: True while an unload request is in flight, so the header can say so before
+//: the next poll reports the result.
+let unloading = false;
+//: {freed_mb} of the last successful unload, kept while the model stays out so
+//: the header can name the price that was paid.
+let lastUnload = null;
 
 function say(text, bad) {
   const el = $("msg");
@@ -189,7 +195,10 @@ function applyState(state) {
   const busy = pending > 0;
   // Loading outranks speaking: a cold start is a queued job that makes no
   // sound, so calling it "speaking" hides the wait this line exists to show.
-  if (loading) {
+  if (unloading) {
+    pill.textContent = "unloading model…";
+    pill.className = "pill busy";
+  } else if (loading) {
     pill.textContent = "loading model…";
     pill.className = "pill busy";
   } else {
@@ -203,14 +212,23 @@ function applyState(state) {
       (worker.active ? " · now: " + worker.active : "")
     : "";
   const notes = [];
-  if (loading) {
+  if (unloading) {
+    notes.push("unloading model…");
+  } else if (loading) {
     // No duration promised: a cold start measured 44 s here (torch import plus
     // weights), and a warm reload of an unloaded model is far quicker.
     notes.push(
       "loading " + loading + " · the first utterance after a start or unload must read the weights"
     );
   } else if (model.loaded === false) {
-    notes.push("model not loaded · the next utterance loads it first");
+    // Only shown while the weights are out, so it cannot go stale on its own:
+    // a reload hides it, and the next unload overwrites it. Clearing it here
+    // would race the poll the unload handler fires before its request, which
+    // can still answer "loaded" from before the unload and wipe the record.
+    const freed = lastUnload && lastUnload.freed_mb
+      ? " · last unload freed " + lastUnload.freed_mb + " MB"
+      : "";
+    notes.push("model not loaded" + freed + " · the next utterance loads it first");
   }
   const last = worker.last;
   if (last) {
@@ -272,8 +290,21 @@ $("replay-last").addEventListener("click", () => {
     (lastState && lastState.messages && lastState.messages[0] && lastState.messages[0].message_id);
   if (id) replay(id);
 });
-$("unload").addEventListener("click", () => {
-  if (confirm("Unload the resident model and free its VRAM?")) act("model unloaded", "/api/unload");
+$("unload").addEventListener("click", async () => {
+  // No confirm: unloading costs nothing but seconds to reload, so the header
+  // reports what the worker is doing instead of a dialog interrupting the page
+  // that describes it.
+  unloading = true;
+  refresh();  // paint "unloading model…" before the request resolves
+  try {
+    const result = await api("/api/unload", {});
+    lastUnload = { model: result.unloaded, freed_mb: result.freed_mb || 0 };
+    say(result.was_loaded === false ? "nothing was loaded" : "");
+  } catch (error) {
+    say(error.message, true);
+  }
+  unloading = false;
+  refresh();
 });
 $("worker").addEventListener("click", () => {
   if ($("worker").dataset.running !== "1") {

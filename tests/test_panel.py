@@ -103,6 +103,12 @@ class TestPage:
         _status, body = get(panel.base, "/")
         assert "loading model…" in body
 
+    def test_no_action_opens_a_modal(self, panel):
+        # Every action here is cheap and reversible, so the page reports state
+        # in the header instead of interrupting itself with a dialog.
+        _status, body = get(panel.base, "/")
+        assert "confirm(" not in body
+
     def test_the_page_needs_no_network(self, panel):
         # An embedded browser pane may have no network at all, and a CDN asset
         # would silently leave the page unstyled or dead.
