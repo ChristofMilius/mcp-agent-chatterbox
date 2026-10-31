@@ -98,6 +98,15 @@ override-dependencies = [
     # constraint-dependencies: a constraint cannot relax a hard "==" pin, and
     # overriding is the same lever already used for the torch pins above.
     "gradio>=6.15.1",
+    # gradio declares pillow<13.0 (diffusers leaves it unpinned), and that cap
+    # is the only reason uv resolves Pillow 12.3.0 -- which carries 41 open
+    # advisories, every one of them fixed by 13.0.0. No gradio release lifts it
+    # yet: 6.31.0, the newest on PyPI, still says <13.0. So the cap has to be
+    # overridden like the pins above. Safe here by construction: this package
+    # never imports PIL (importing speak/engine/panel leaves it unloaded),
+    # gradio is never launched, and the only consumer is diffusers, which
+    # imports it while the model loads. The proof is a live render.
+    "pillow>=13.0.0",
 ]
 
 constraint-dependencies = [
