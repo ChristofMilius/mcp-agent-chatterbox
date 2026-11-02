@@ -693,6 +693,36 @@ process goes away when the turn ends.
   "exaggeration": 0.4 }
 ```
 
+#### What is inside the files
+
+Each chunk file carries a standard RIFF `LIST/INFO` tag block describing the
+audio it contains, written by `audio.write_wav`:
+
+| Tag | Value |
+|---|---|
+| `INAM` (title) | `<message_id> #<chunk>/<total>` |
+| `ICMT` (comment) | the text of that chunk — concat the chunks in order for the whole message |
+| `ICRD` (date) | the day it was rendered |
+| `ISFT` (software) | `mcp-agent-chatterbox <version>` |
+
+The transcript is per chunk, not per message, so a 4000-character reply is not
+copied into every file. A 500-character chunk adds about 650 bytes against
+roughly a megabyte of audio — under 0.1%, and ffprobe, foobar2000, VLC and
+Windows read the tags while any reader that does not know the chunk skips it, so
+playback is unchanged:
+
+```bash
+ffprobe -v error -show_entries format_tags -of default output/1770000000123_2.wav
+# TAG:title=1770000000123 #2/3
+# TAG:comment=Grüße aus München. Das ist die zweite Gruppe von Sätzen.
+```
+
+**What this means for privacy.** The text is now on disk in a searchable form,
+where before it was only audible. The project still never logs spoken words — the
+log is a different medium and stays size-only — but the WAVs (and anything that
+indexes or backs them up) now contain the transcript verbatim. Delete
+`output/*.wav` to remove it, the same way you shorten the panel's history.
+
 ### What it actually costs
 
 Measured 2026-10-21 on the development machine (Ryzen 5 5600, RTX 3060 12 GB,

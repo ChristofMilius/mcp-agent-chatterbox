@@ -61,9 +61,11 @@ import threading
 import time
 import weakref
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import NamedTuple, Protocol
 
+from mcp_agent_chatterbox import __version__
 from mcp_agent_chatterbox.audio import duration_s, write_wav
 from mcp_agent_chatterbox.config import Config
 from mcp_agent_chatterbox.errors import ToolFault
@@ -1244,8 +1246,17 @@ class Speaker:
 
         name = self._chunk_name(job, index)
         path = job.out_dir / name
+        # Each file carries the text it actually says, not the whole message:
+        # concatenating the chunks' comments in order reconstructs the message
+        # without duplicating a 4000-character budget across a dozen files.
+        info = {
+            "INAM": f"{job.message_id} #{index}/{total}",
+            "ICMT": sentence,
+            "ICRD": date.today().isoformat(),
+            "ISFT": f"mcp-agent-chatterbox {__version__}",
+        }
         try:
-            write_wav(result["wav"], result["sample_rate"], path)
+            write_wav(result["wav"], result["sample_rate"], path, info=info)
         except OSError as exc:
             logger.error("[speak] %s could not write %s: %s", job.message_id, name, exc)
             job.errors.append(f"chunk {index}: write failed")

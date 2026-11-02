@@ -322,6 +322,16 @@ class TestOutput:
         assert last["device"] == "cpu"
         assert last["played_chunks"] == 0
 
+    def test_each_chunk_file_carries_the_text_it_says(self, cfg, fake_engine):
+        # The files outlive the job, which is why the transcript is written into
+        # them: the panel's history and any later listener have no other record.
+        cfg.sentences_per_chunk = 1
+        payload, _ = run(cfg, fake_engine, "Alpha. Beta. Gamma.")
+        for sentence, name in zip(("Alpha.", "Beta.", "Gamma."), payload["files"], strict=True):
+            raw = (cfg.output_dir / name).read_bytes()
+            assert sentence.encode("utf-8") in raw
+            assert payload["message_id"].encode("ascii") in raw
+
     def test_explicit_filename_is_used(self, cfg, fake_engine):
         payload, _ = run(cfg, fake_engine, filename="take-one")
         assert payload["files"] == ["take-one_1.wav"]
