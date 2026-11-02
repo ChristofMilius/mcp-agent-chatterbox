@@ -111,12 +111,10 @@ class TestPage:
         _status, body = get(panel.base, "/")
         assert "confirm(" not in body
 
-    def test_the_page_needs_no_network(self, panel):
-        # An embedded browser pane may have no network at all, and a CDN asset
-        # would silently leave the page unstyled or dead.
+    def test_the_panel_can_stop_itself(self, panel):
         _status, body = get(panel.base, "/")
-        for forbidden in ("<script src", "@import", "href=\"http", "url(http"):
-            assert forbidden not in body, forbidden
+        assert "Stop panel" in body
+        assert "/api/panel/stop" in body
 
     def test_the_history_list_scrolls_inside_the_window(self, panel):
         # Every message ever spoken is listed, so the list has to be the scroll

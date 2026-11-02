@@ -107,6 +107,39 @@ def _cmd_panel(args) -> int:
         return 0
 
 
+def _cmd_panel_stop(args) -> int:
+    """Ask a running panel to shut down."""
+    import json
+    import urllib.error
+    import urllib.request
+
+    from mcp_agent_chatterbox.panel import DEFAULT_PANEL_PORT as _DEFAULT_PANEL_PORT
+
+    port = args.port if args.port is not None else _DEFAULT_PANEL_PORT
+    url = f"http://127.0.0.1:{port}/api/panel/stop"
+    request = urllib.request.Request(
+        url,
+        data=b"{}",
+        method="POST",
+        headers={"Content-Type": "application/json", "X-Chatterbox": "1"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            body = {}
+        print(f"panel on 127.0.0.1:{port}: HTTP {exc.code} {body.get('reason', '')}".strip())
+        return 1
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        print(f"no panel on 127.0.0.1:{port} ({exc})")
+        return 1
+    print(f"panel on 127.0.0.1:{port}: {body.get('status', 'stopping')}")
+    return 0
+
+
 def _cmd_doctor(args) -> int:
     from mcp_agent_chatterbox.config import Config
     from mcp_agent_chatterbox.engine import ChatterboxEngine
@@ -316,6 +349,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Do not open the page in the default browser.",
     )
     p_panel.set_defaults(func=_cmd_panel)
+
+    p_pstop = sub.add_parser(
+        "panel-stop", help="Ask a running panel to shut down."
+    )
+    p_pstop.add_argument("--port", type=int, default=None)
+    p_pstop.set_defaults(func=_cmd_panel_stop)
 
     p_speak = sub.add_parser("speak", help="Synthesize one utterance and save/play it.")
     p_speak.add_argument("text", help="Text to speak.")

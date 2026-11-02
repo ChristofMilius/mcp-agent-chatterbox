@@ -133,6 +133,7 @@
   <h1>Chatterbox</h1>
   <span id="pill" class="pill">connecting…</span>
   <button id="worker" class="danger" title="Start or stop the resident worker process">Start worker</button>
+  <button id="panel-stop" class="danger" title="Shut down this panel server">Stop panel</button>
   <span id="detail" class="muted"></span>
 </header>
 
@@ -171,6 +172,9 @@ let lastState = null;
 //: True while an unload request is in flight, so the header can say so before
 //: the next poll reports the result.
 let unloading = false;
+//: True while the panel is shutting itself down, so the two-second poll stops
+//: hammering a dead server and the page can say so instead.
+let panelStopping = false;
 //: {freed_mb} of the last successful unload, kept while the model stays out so
 //: the header can name the price that was paid.
 let lastUnload = null;
@@ -341,6 +345,7 @@ function applyState(state) {
 }
 
 async function refresh() {
+  if (panelStopping) return;
   try {
     const response = await fetch("/api/state", { cache: "no-store" });
     const state = await response.json();
@@ -416,6 +421,13 @@ $("worker").addEventListener("click", () => {
   // it again.
   say("stopping the worker…");
   act("worker stopped", "/api/worker/stop");
+});
+$("panel-stop").addEventListener("click", async () => {
+  panelStopping = true;
+  say("stopping panel…");
+  try { await api("/api/panel/stop", {}); } catch (error) { /* server is gone */ }
+  document.body.innerHTML =
+    '<div style="padding:40px;text-align:center;color:var(--muted)">Panel stopped. Close this tab.</div>';
 });
 $("speak").addEventListener("click", () => {
   const text = $("text").value.trim();

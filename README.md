@@ -64,7 +64,7 @@ models and the voices found — the first thing to run when a call misbehaves.
 | speak from an agent | register the server ([here](#registering-the-mcp-server)), then call `speak` |
 | stop, replay or speak by hand | `uv run mcp-agent-chatterbox panel` → <http://127.0.0.1:8766/> |
 | free the VRAM, keep the worker | `tts_unload`, or **Unload model** in the panel |
-| stop the worker at the end of the day | `uv run mcp-agent-chatterbox worker-stop` (then Ctrl+C the panel if it is open) |
+| stop the worker at the end of the day | `uv run mcp-agent-chatterbox worker-stop` (then `panel-stop` if the panel is open) |
 | serve over HTTP instead of stdio | `uv run mcp-agent-chatterbox serve --http --port 8123` |
 
 The short version of everything below: **the MCP server never synthesizes.**
@@ -532,6 +532,8 @@ what you type. Started on demand, nothing autostarts:
 uv run mcp-agent-chatterbox panel            # serves http://127.0.0.1:8766/ and opens it
 uv run mcp-agent-chatterbox panel --no-open  # just serve it
 uv run mcp-agent-chatterbox panel --port 9000
+uv run mcp-agent-chatterbox panel-stop       # ask a running panel to shut down
+uv run mcp-agent-chatterbox panel-stop --port 9000
 ```
 
 It is one HTML file and the standard library's `http.server` — no toolkit to
@@ -605,6 +607,13 @@ localhost port and unload your model.
 The page carries no external assets, so it renders the same in a normal browser
 and inside an embedded browser pane. There is no desktop app integration to
 build: it is a URL.
+
+**Stopping it.** `Ctrl+C` works, but it is no longer required: the header has a
+**Stop panel** button and there is a `panel-stop` command (`--port` to target a
+non-default port). Both post to `/api/panel/stop`, which shuts the server down
+from inside; the page replaces itself with a "Panel stopped" message instead of
+polling a dead server. The resident worker is untouched — stopping the panel does
+not stop speech.
 
 **Stop playback cuts the sound, not just the queue.** A blocking play starts the
 WAV asynchronously and waits in its own thread, checking a stop flag every 20 ms,

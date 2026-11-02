@@ -54,6 +54,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib import resources
@@ -157,6 +159,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             self._start_worker()
         elif path == "/api/worker/stop":
             self._stop_worker()
+        elif path == "/api/panel/stop":
+            self._stop_panel()
         else:
             self._json(
                 404, {"ok": False, "reason": "not_found", "message": f"No route for {path}."}
@@ -261,6 +265,23 @@ class PanelHandler(BaseHTTPRequestHandler):
         The worker exits by itself, so there is no pid for the panel to kill.
         """
         self._forward({"op": "shutdown"})
+
+    def _stop_panel(self) -> None:
+        """
+        Shut the panel server itself down.
+
+        `server.shutdown()` blocks until `serve_forever()` returns, and it must
+        not be called from the request thread it is waiting on, so it runs in a
+        short-lived daemon thread after the response has been flushed. The page
+        that triggered it is about to lose its server, which is the intended
+        outcome; there is nothing more to report to it.
+        """
+        self._json(200, {"ok": True, "status": "stopping"})
+        threading.Thread(target=self._shutdown_after, args=(0.1,), daemon=True).start()
+
+    def _shutdown_after(self, delay: float) -> None:
+        time.sleep(delay)
+        self.server.shutdown()
 
     def _worker_answers(self) -> bool:
         """True when a worker is up and answering, not merely that a port is bound."""
