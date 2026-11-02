@@ -937,8 +937,10 @@ it from anywhere, install a tiny shim — see
 
 `worker` runs the resident process in the foreground; it loads the model on the
 first utterance and keeps it loaded. `speak` shares the same code path; by
-default it returns as soon as the worker has accepted the job, so the shell stays
-free for the next command, and `--wait` blocks until the queue is drained. It is
+default it accepts the job and returns immediately, rendering and playing in a
+detached background process so the shell stays free for the next command (output
+goes to `logs/speak_background.log`), and `--wait` blocks until the queue is
+drained. It is
 the fastest way to check a fresh install without involving MCP at all. `panel` is
 the only command that needs no GPU: it renders nothing and forwards every action
 to the worker, so it is also safe to leave running while another job owns the

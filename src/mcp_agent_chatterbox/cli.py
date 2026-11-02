@@ -214,7 +214,59 @@ def _cmd_doctor(args) -> int:
     return 0
 
 
+def _detach_speak(args) -> int:
+    """
+    Run `speak` in a detached child process and return immediately.
+
+    The in-process render needs the process to stay alive, which is exactly
+    what captures the shell. Spawning a child that runs `speak --wait` keeps
+    the render (and the audio playback) alive in the background while this
+    process exits and frees the terminal. Stdout/stderr go to a log file in
+    the logs directory so a failed render is not silent.
+    """
+    import os
+    import subprocess
+    import sys
+
+    from mcp_agent_chatterbox.config import Config
+
+    cfg = Config()
+    cfg.logs_dir.mkdir(parents=True, exist_ok=True)
+    log_path = cfg.logs_dir / "speak_background.log"
+
+    argv = list(sys.argv[1:])
+    if "speak" not in argv:
+        argv = ["speak"] + argv
+    if "--wait" not in argv:
+        argv = argv + ["--wait"]
+
+    cmd = [sys.executable, "-m", "mcp_agent_chatterbox.cli", *argv]
+
+    # DETACHED_PROCESS keeps the child from inheriting this console; the
+    # CREATE_NEW_PROCESS_GROUP lets it survive the parent's exit.
+    creationflags = 0
+    if os.name == "nt":
+        creationflags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+
+    with log_path.open("ab") as log:
+        subprocess.Popen(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            creationflags=creationflags,
+            close_fds=True,
+        )
+
+    print(f"Queued  : rendering in the background (log: {log_path})")
+    print("        use `speak ... --wait` to block instead.")
+    return 0
+
+
 def _cmd_speak(args) -> int:
+    if not args.wait:
+        return _detach_speak(args)
+
     from mcp_agent_chatterbox.config import Config
     from mcp_agent_chatterbox.engine import ChatterboxEngine
     from mcp_agent_chatterbox.errors import ToolFault
@@ -270,8 +322,7 @@ def _cmd_speak(args) -> int:
         print("Knobs   : " + ", ".join(f"{k}={v}" for k, v in knobs.items()))
 
     if not args.wait:
-        print("Queued  : rendering in the worker (use --wait to block until done).")
-        return 0
+        return _detach_speak(args)
 
     # With --wait the CLI blocks like the operator console: the shell should
     # not return while the worker is still rendering.
