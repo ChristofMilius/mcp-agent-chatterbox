@@ -351,7 +351,13 @@ class PanelHandler(BaseHTTPRequestHandler):
             pass
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 — http.server's name
-        logger.info("[panel] %s %s", self.address_string(), format % args)
+        # The open page polls /api/state every two seconds, so logging every
+        # request at INFO buries the console under one line per poll for as long
+        # as a tab stays open. Polls go to the rotating file at DEBUG; page
+        # loads, actions and error statuses still reach the console at INFO.
+        poll = self.command == "GET" and urlsplit(self.path).path == "/api/state"
+        level = logging.DEBUG if poll else logging.INFO
+        logger.log(level, "[panel] %s %s", self.address_string(), format % args)
 
 
 def serve(

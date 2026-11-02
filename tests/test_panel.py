@@ -15,6 +15,7 @@ the header and Origin checks are for.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import urllib.error
 import urllib.request
@@ -254,6 +255,38 @@ class TestWorkerLifecycle:
         status, body = post(panel.base, "/api/worker/start")
         assert status == 503
         assert body["reason"] == "worker_start_timeout"
+
+
+class TestQuietPolling:
+    """
+    The console must survive a tab being left open.
+
+    The page polls /api/state every two seconds for as long as it is visible, and
+    the console handler runs at INFO, so logging polls there is one line per poll
+    — enough to bury every other message. The polls stay in the rotating file at
+    DEBUG; everything a human might want to see live stays at INFO.
+    """
+
+    def test_a_poll_does_not_reach_the_console_level(self, panel, caplog):
+        caplog.set_level(logging.DEBUG, logger="mcp_agent_chatterbox.panel")
+        get(panel.base, "/api/state")
+        polls = [r for r in caplog.records if "/api/state" in r.getMessage()]
+        assert polls
+        assert all(r.levelno < logging.INFO for r in polls)
+
+    def test_a_page_load_is_still_reported_at_info(self, panel, caplog):
+        caplog.set_level(logging.DEBUG, logger="mcp_agent_chatterbox.panel")
+        get(panel.base, "/")
+        loads = [r for r in caplog.records if '"GET / HTTP/1.1"' in r.getMessage()]
+        assert loads
+        assert all(r.levelno == logging.INFO for r in loads)
+
+    def test_an_action_is_still_reported_at_info(self, panel, caplog):
+        caplog.set_level(logging.DEBUG, logger="mcp_agent_chatterbox.panel")
+        post(panel.base, "/api/stop")
+        actions = [r for r in caplog.records if '"POST /api/stop' in r.getMessage()]
+        assert actions
+        assert all(r.levelno == logging.INFO for r in actions)
 
 
 class TestRouting:
