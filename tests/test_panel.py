@@ -130,6 +130,53 @@ class TestPage:
         assert "overflow-y: auto" in rule.group("decls")
 
 
+class TestHistoryTranscript:
+    """
+    The transcript field: what a history row says, between the play button and
+    the file data.
+
+    The page is one file with no build step, so these assertions are on the
+    served HTML itself. They pin the three properties that make the field work
+    and none of which would survive being "simplified" away: the field sits
+    between the button and the meta data, the ticker is driven by a measured
+    overflow rather than a fixed distance, and a poll that changes nothing must
+    not replace the rows — a re-created node loses the marquee mid-scroll.
+    """
+
+    def test_the_field_sits_between_the_play_button_and_the_file_data(self, panel):
+        _status, body = get(panel.base, "/")
+        assert "message.transcript" in body
+        assert "item.append(button, say, id, meta)" in body
+
+    def test_the_field_is_clipped_to_one_line_until_hovered(self, panel):
+        _status, body = get(panel.base, "/")
+        rule = re.search(r"li \.say\s*\{(?P<decls>[^}]*)\}", body)
+        assert rule, "no li .say rule"
+        assert "flex: 1 1 0" in rule.group("decls")
+        assert "overflow: hidden" in rule.group("decls")
+        assert "white-space: nowrap" in rule.group("decls")
+
+    def test_hovering_starts_a_slow_ticker(self, panel):
+        _status, body = get(panel.base, "/")
+        assert "@keyframes marquee" in body
+        assert "mouseenter" in body
+        assert "mouseleave" in body
+        # The distance comes from the row's real overflow, not a guess.
+        assert "text.scrollWidth - say.clientWidth" in body
+        # ...and the speed is a constant, so a long text scrolls longer rather
+        # than faster.
+        assert "shift / 40" in body
+
+    def test_a_poll_does_not_rebuild_unchanged_rows(self, panel):
+        _status, body = get(panel.base, "/")
+        assert "if (fingerprint === renderedHistory) return;" in body
+
+    def test_motion_sensitive_viewers_get_the_text_wrapped_instead(self, panel):
+        _status, body = get(panel.base, "/")
+        assert "prefers-reduced-motion" in body
+        assert "li .say.scroll { white-space: normal; }" in body
+
+
 class TestState:
     def test_state_combines_queue_and_history(self, panel):
         panel.replies["history"] = {

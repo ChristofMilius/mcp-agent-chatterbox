@@ -62,6 +62,42 @@ def duration_s(wav, sample_rate: int) -> float:
     return round(num_samples(wav) / sample_rate, 2)
 
 
+def read_info(path: str | Path, limit: int = 256 * 1024) -> dict[str, str]:
+    """
+    Every RIFF INFO tag in a WAV file, or {} when it has none.
+
+    Only the front of the file is read, since the tag chunk is written ahead of
+    the samples. Unreadable and malformed files return {} rather than raising:
+    this feeds a history listing, and one old truncated file must not blank the
+    whole page.
+    """
+    try:
+        with Path(path).open("rb") as handle:
+            head = handle.read(limit)
+    except OSError:
+        return {}
+    if head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+        return {}
+    tags: dict[str, str] = {}
+    offset = 12
+    while offset + 8 <= len(head):
+        chunk_id = head[offset : offset + 4]
+        size = struct.unpack_from("<I", head, offset + 4)[0]
+        if chunk_id == b"data":
+            break
+        body = head[offset + 8 : offset + 8 + size]
+        if chunk_id == b"LIST" and body[:4] == b"INFO":
+            position = 4
+            while position + 8 <= len(body):
+                code = body[position : position + 4].decode("ascii", "replace")
+                length = struct.unpack_from("<I", body, position + 4)[0]
+                value = body[position + 8 : position + 8 + length]
+                tags[code] = value.rstrip(b"\x00").decode("utf-8", "replace")
+                position += 8 + length + (length & 1)
+        offset += 8 + size + (size & 1)
+    return tags
+
+
 def _info_chunk(info: Mapping[str, str]) -> bytes:
     """
     One RIFF ``LIST/INFO`` chunk carrying `info`.

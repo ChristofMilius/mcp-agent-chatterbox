@@ -580,6 +580,22 @@ else. The
 files are the history, which also means the list survives a worker restart —
 and that deleting old `tts_output/*.wav` files is how you shorten it.
 
+**Each row shows what it says.** A message id and a byte count do not tell you
+which utterance a play button belongs to, so every row carries the message text
+in the space between its play button and the file data. Reading it means reading
+the files, which the panel does anyway: the chunk `ICMT` tags are concatenated in
+playback order, cached by path, modification time and size so a two-second poll
+over a directory of old chunks costs `stat` calls rather than file reads. Idle, the
+text is one clipped line with an ellipsis; hovering the row scrolls it like a
+news ticker at 40 px/s — slow enough to read the opening words, which is what
+tells one message from another — and leaving resets it to the start. The scroll
+distance is measured from the row's real overflow, so a short message does not
+scroll at all and a long one takes as long as it needs instead of running faster.
+Files rendered before the tags existed show `no transcript recorded`. A poll that
+reports an unchanged history does not rebuild the rows, because replacing the
+node under the cursor would stop the ticker every two seconds. With
+`prefers-reduced-motion` the text wraps in place on hover instead of moving.
+
 Two deliberate limits: the panel is bound to `127.0.0.1` (not reachable from
 another machine), and every action requires a custom header that a foreign web
 page cannot set without a CORS preflight this server never approves, plus a
@@ -709,7 +725,9 @@ The transcript is per chunk, not per message, so a 4000-character reply is not
 copied into every file. A 500-character chunk adds about 650 bytes against
 roughly a megabyte of audio — under 0.1%, and ffprobe, foobar2000, VLC and
 Windows read the tags while any reader that does not know the chunk skips it, so
-playback is unchanged:
+playback is unchanged. The panel is the first consumer: it reads `ICMT` back out
+of the files to label each history row, which is why a row can show its text
+without the worker remembering anything.
 
 ```bash
 ffprobe -v error -show_entries format_tags -of default output/1770000000123_2.wav

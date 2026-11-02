@@ -79,12 +79,42 @@
     font-size: 12.5px;
   }
   li:first-child { border-top: none; }
-  li .id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  li .meta { color: var(--muted); white-space: nowrap; }
+  li .id { flex: 0 0 auto; }
+  li .meta { color: var(--muted); white-space: nowrap; flex: 0 0 auto; }
   li button { padding: 3px 9px; font-size: 12px; }
+  /* The transcript field. It is the space between the play button and the file
+     data, showing what the file says so a replay candidate can be recognised
+     without opening anything. Idle it is one clipped line; hovering the row
+     scrolls it like a news ticker (see .scroll below). Prose font, because this
+     is language, not a filename. */
+  li .say {
+    flex: 1 1 0; min-width: 0; overflow: hidden; white-space: nowrap;
+    font-family: "Segoe UI", system-ui, sans-serif; color: var(--text);
+  }
+  li .say > span {
+    display: inline-block; max-width: 100%; overflow: hidden;
+    text-overflow: ellipsis; vertical-align: bottom;
+  }
+  /* Files written before the tags existed have no text to show; say so rather
+     than leaving the field looking broken. */
+  li .say.none::before { content: "no transcript recorded"; color: #5c6673; font-style: italic; }
+  /* --shift and --dur are set from the measured overflow on mouseenter. 40 px/s
+     is a ticker pace: slow enough to read the opening words, which is what tells
+     one message from another. Removing .scroll resets the transform at once. */
+  li .say.scroll > span { max-width: none; animation: marquee var(--dur, 20s) linear infinite; }
+  @keyframes marquee {
+    from { transform: translateX(0); }
+    to { transform: translateX(var(--shift, 0px)); }
+  }
+  /* Motion-sensitive users get the whole text wrapped in place instead. */
+  @media (prefers-reduced-motion: reduce) {
+    li .say.scroll { white-space: normal; }
+    li .say.scroll > span { animation: none; }
+  }
   /* The list is the scroll region, not the page: it grows with the window down
-     to the section's floor, and an open tab keeps its scroll position across
-     the two-second poll because only the items are replaced. */
+     to the section's floor, and an open tab keeps its scroll position and its
+     hovered ticker across the two-second poll because an unchanged history is
+     not re-rendered at all. */
   #history {
     flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
     scrollbar-width: thin; scrollbar-color: #3a414d transparent;
@@ -143,6 +173,8 @@ let unloading = false;
 //: {freed_mb} of the last successful unload, kept while the model stays out so
 //: the header can name the price that was paid.
 let lastUnload = null;
+//: The history payload currently on screen. See renderHistory for why.
+let renderedHistory = null;
 
 function say(text, bad) {
   const el = $("msg");
@@ -181,6 +213,13 @@ function size(bytes) {
 
 function renderHistory(messages) {
   const list = $("history");
+  // A poll that changes nothing must leave the rows alone: replacing them
+  // destroys the node under the cursor, which kills a marquee mid-scroll every
+  // two seconds. Comparing the payload is enough to tell "nothing new" from
+  // "new message, finished utterance, or a replay".
+  const fingerprint = JSON.stringify(messages);
+  if (fingerprint === renderedHistory) return;
+  renderedHistory = fingerprint;
   list.replaceChildren();
   if (!messages.length) {
     const empty = document.createElement("li");
@@ -197,6 +236,19 @@ function renderHistory(messages) {
     button.title = "Replay " + message.message_id;
     button.addEventListener("click", () => replay(message.message_id));
 
+    // The transcript of the message, reconstructed from its chunks' ICMT tags.
+    // The extra span exists because the marquee translates it while the field
+    // itself stays clipped.
+    const say = document.createElement("span");
+    say.className = "say";
+    if (message.transcript) {
+      const text = document.createElement("span");
+      text.textContent = message.transcript;
+      say.append(text);
+    } else {
+      say.classList.add("none");
+    }
+
     const id = document.createElement("span");
     id.className = "id";
     id.textContent = message.message_id;
@@ -206,9 +258,28 @@ function renderHistory(messages) {
     meta.textContent =
       message.chunks + "× · " + size(message.bytes) + " · " + age(message.modified);
 
-    item.append(button, id, meta);
+    item.append(button, say, id, meta);
+    item.addEventListener("mouseenter", () => scrollText(item, true));
+    item.addEventListener("mouseleave", () => scrollText(item, false));
     list.append(item);
   }
+}
+
+// Start or stop the ticker on one row. The distance is measured at hover time,
+// because it depends on the window width and the current row contents.
+function scrollText(item, on) {
+  const say = item.querySelector(".say");
+  const text = say && say.firstElementChild;
+  if (!text) return;
+  if (!on) {
+    say.classList.remove("scroll");
+    return;
+  }
+  const shift = text.scrollWidth - say.clientWidth;
+  if (shift <= 1) return;  // it already fits; nothing to scroll
+  say.style.setProperty("--shift", -shift + "px");
+  say.style.setProperty("--dur", Math.max(4, shift / 40) + "s");
+  say.classList.add("scroll");
 }
 
 function applyState(state) {
