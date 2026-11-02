@@ -15,18 +15,63 @@ Ships three things:
   and a `/speak` command to opencode itself, and installs itself globally so
   it works in every project, not just this repo.
 
-## Start the worker first
+## Contents
 
-The MCP server does not synthesize. It hands the text to a separate, long-lived
-worker process and waits for the result.
+| To… | Go to |
+|---|---|
+| install it and get it speaking | [Quick start](#quick-start) |
+| use the control panel | [The panel](#the-panel) |
+| call `speak` and friends from an agent | [Tools](#tools) |
+| run it from a shell | [CLI](#cli) |
+| register the MCP server in a harness | [Registering the MCP server](#registering-the-mcp-server) |
+| change a setting | [Configuration](#configuration) |
+| fix "no audio" / `worker_not_running` | [Troubleshooting](#troubleshooting) |
+
+Reference: [How the pieces fit](#how-the-pieces-fit) ·
+[The four models](#the-four-models) · [Requirements](#requirements) ·
+[Installation](#installation) · [Model weights](#model-weights) ·
+[Skill](#skill-teaching-an-agent-to-answer-by-voice) ·
+[opencode plugin](#the-opencode-plugin) · [Voice cloning](#voice-cloning) ·
+[Web surface](#web-surface-http-transport) · [Design notes](#design-notes) ·
+[Dependency advisories](#dependency-advisories) · [Development](#development)
+
+## Quick start
+
+Four steps from a fresh checkout to audible output.
 
 ```bash
-mcp-agent-chatterbox worker          # start it, leave it running
-mcp-agent-chatterbox worker-status   # is it up? what is it doing?
-mcp-agent-chatterbox worker-stop     # finish the queue, then exit
+# 1. environment (CUDA torch comes from the lockfile)
+uv sync --extra dev
+
+# 2. settings: copy the reference list, then edit .env
+cp .env.example .env
+
+# 3. the resident worker: start once, leave running
+uv run mcp-agent-chatterbox worker
+uv run mcp-agent-chatterbox worker-status    # is it up? what is it doing?
+uv run mcp-agent-chatterbox worker-stop      # finish the queue, then exit
+
+# 4. prove the whole chain, with no MCP involved
+uv run mcp-agent-chatterbox speak "Build finished."
 ```
 
-### How the pieces fit
+The first `speak` downloads the model (minutes) and loads it; later calls reuse
+it. `uv run mcp-agent-chatterbox doctor` prints the device, per-GPU VRAM, the
+models and the voices found — the first thing to run when a call misbehaves.
+
+| I want to… | Do this |
+|---|---|
+| speak from an agent | register the server ([here](#registering-the-mcp-server)), then call `speak` |
+| stop, replay or speak by hand | `uv run mcp-agent-chatterbox panel` → <http://127.0.0.1:8766/> |
+| free the VRAM, keep the worker | `tts_unload`, or **Unload model** in the panel |
+| stop the worker at the end of the day | `uv run mcp-agent-chatterbox worker-stop` (then Ctrl+C the panel if it is open) |
+| serve over HTTP instead of stdio | `uv run mcp-agent-chatterbox serve --http --port 8123` |
+
+The short version of everything below: **the MCP server never synthesizes.**
+It hands text to the worker over loopback, so the worker has to be running
+before anything can speak — and that is why step 3 exists at all.
+
+## How the pieces fit
 
 ```
 LLM / agent                              browser
@@ -117,7 +162,7 @@ without a reference clip, so the tool checks this up front and returns a
 
 ## Requirements
 
-- Python 3.13 (see [Why 3.13 only](#why-313-only))
+- Python 3.13 (`requires-python = ">=3.13,<3.14"` in `pyproject.toml`)
 - An NVIDIA GPU with a driver of 525+ for the CUDA 12.4 wheels. CPU works but
   is slow.
 - ~6 GB of free VRAM for a comfortable margin (turbo needs ~2-3 GB, the 500M
@@ -1050,16 +1095,14 @@ box where LM Studio holds both GPUs, `doctor` shows the headroom per card and
 
 ## Design notes
 
-**Synthesis lives in its own process, and that is not incidental.** The server
-used to render in-process and reliably stalled after two sentences — over both
-transports, with the client pipe open and closed. A plain process running the
-same code finished the reply. So the worker owns the model and the playback; the
-server owns the protocol and carries text across a loopback socket. Requests are
-one JSON line each way, one request per connection, and the worker is strictly
-single-threaded: one GPU, one resident model, and a Chatterbox model instance
-carries mutable state. Nothing may end that loop — a handler exception is logged
-and returned as `worker_error` rather than allowed to kill a resident process
-that the next utterance also depends on.
+**The worker owns the model; the server owns the protocol.** The measurement
+behind that split, and why in-process synthesis stalled, is in
+[How the pieces fit](#how-the-pieces-fit). What follows from it here: requests
+are one JSON line each way, one request per connection, and the worker is
+strictly single-threaded — one GPU, one resident model, and a Chatterbox model
+instance carries mutable state. Nothing may end that loop: a handler exception
+is logged and returned as `worker_error` rather than allowed to kill a resident
+process that the next utterance also depends on.
 
 **A card that cannot be queried is skipped, not fatal.** If
 `torch.cuda.mem_get_info()` throws for every ordinal — a driver that has not
@@ -1109,39 +1152,38 @@ hours, loads the model on its first utterance and keeps it resident.
 
 ## Dependency advisories
 
-Two of the dependencies GitHub flags here cannot both be fixed, and the reason is
-worth writing down so nobody "fixes" it the wrong way.
+Dependabot reports against everything in `uv.lock`, including packages nobody
+imports. All currently open alerts are closed; this section records how, so
+nobody "fixes" one of them the wrong way.
 
-**`certifi` — fixed.** The lock held `2026.7.22`, whose bundle included emSign
-root CAs with compromised intermediate keys; it is now `2026.10.19`. This one
-mattered because it is the CA bundle used for HTTPS when downloading model
-weights from Hugging Face.
+**`Pillow` — overridden to 13.0.0.** The lock used to hold 12.3.0, which carries
+41 advisories (5 critical, 23 high, 13 moderate), every one of them first
+patched in 13.0.0. Nothing here depends on Pillow directly: it is in the tree
+only because `chatterbox-tts` pulls in `gradio` and `diffusers`, and `gradio`
+declares `pillow<13.0,>=8.0` — exactly the vulnerable range. No `gradio` release
+lifts that cap (6.31.0, the newest on PyPI, still says `<13.0`), so
+`[tool.uv] override-dependencies` raises it the same way the torch and gradio
+pins are raised. Safe by construction rather than by assumption: importing
+`speak`, `engine` or `panel` leaves `PIL` unloaded, `gradio` is never launched,
+the only consumer is `diffusers` (which imports `PIL` during the model load),
+and every advisory needs attacker-supplied image bytes reaching a decode or
+encode path — this package's inputs are text and reference-clip audio.
 
-**`Pillow` — cannot be fixed while `gradio` is present.** Pillow 12.3.0 carries
-nine advisories (2 critical, 6 high, 2 moderate), all fixed in 13.0.0. But
-`gradio` requires `pillow<13.0,>=8.0` — including the latest release (6.30.0) —
-and `chatterbox-tts` requires `gradio`. So `pillow 13.0.0` is unresolvable, and
-`uv lock --upgrade-package pillow==13.0.0` fails with a genuine conflict, not a
-stale lock. Verified against PyPI metadata rather than the resolver message
-alone:
+**`certifi` — bumped.** 2026.7.22 bundled emSign root CAs with compromised
+intermediate keys; the lock now carries 2026.10.19. This one mattered because it
+is the CA bundle used for HTTPS when model weights are fetched from Hugging
+Face.
 
-```
-gradio 6.30.0     -> pillow<13.0,>=8.0
-diffusers 0.38.0  -> Pillow            (unconstrained)
-pillow (PyPI)     -> 13.0.0
-```
+**`setuptools`, `starlette`, and the rest.** `setuptools` is floored at 83.0.0
+so it cannot resolve below the patched release; the reasoning (and the
+misdiagnosis that once turned it into a cap) is in
+[Why `setuptools` is floored, not capped](#why-setuptools-is-floored-not-capped).
+`starlette` could only leave 0.52.x together with `gradio>=6.15.1`, because
+gradio 6.8.0 pins `starlette<1.0`; both are overridden. The remainder —
+`brotli`, `filelock`, `msgpack`, `opentelemetry-api`, `virtualenv` — is bumped
+past its first patched version and pinned by the lock.
 
-**Why the exposure is close to zero.** This server takes text and returns WAV. It
-has no image input path at all, and every one of those advisories lives in an
-image decoder — JPEG, TIFF, PDF, EPS, GIF, `_imagingmorph`. Pillow is in the tree
-only because `chatterbox-tts` ships a Gradio demo that this project never runs.
-Nothing here hands Pillow a file.
-
-**What not to do.** Do not add `[tool.uv] override-dependencies = ["pillow>=13.0.0"]`.
-It silences the alerts by overriding a constraint `gradio` declares outright, so
-Gradio's image code would run against a Pillow release it was never tested with —
-trading a warning about code you never execute for an untested runtime you cannot
-see. The correct fix arrives when Gradio raises its cap; re-check with:
+Re-check the Pillow cap when `gradio` lifts it:
 
 ```bash
 uv lock --upgrade-package pillow --dry-run
@@ -1221,16 +1263,8 @@ Tests stub torch and the Chatterbox classes, so the suite runs in seconds and
 does not touch the network or the GPU. For a real end-to-end check use
 `mcp-agent-chatterbox speak`.
 
-**Dependency advisories.** Dependabot reports against everything in `uv.lock`,
-including packages nobody imports. The bulk of the open alerts is **Pillow**,
-reached only through `chatterbox-tts -> gradio`: neither this project's code nor
-chatterbox's runtime modules (`tts`, `vc`, `mtl_tts`) import `gradio`, `PIL` or
-`diffusers`, and the advisories are all image decoders we never call. Pillow
-therefore stays at the version its parent permits (`gradio` pins `pillow<13`),
-because forcing 13 would swap an unreachable advisory for a dependency that
-declares the opposite. Revisit when gradio lifts that cap. The rest — `brotli`,
-`filelock`, `msgpack`, `opentelemetry-api`, `setuptools`, `virtualenv` — is
-bumped past its first patched version and pinned by the lock, not by us.
+Dependency pins and the state of the Dependabot alerts are in
+[Dependency advisories](#dependency-advisories).
 
 ## License
 
