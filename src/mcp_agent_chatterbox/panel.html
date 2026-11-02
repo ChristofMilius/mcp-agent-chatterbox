@@ -98,9 +98,10 @@
   /* Files written before the tags existed have no text to show; say so rather
      than leaving the field looking broken. */
   li .say.none::before { content: "no transcript recorded"; color: #5c6673; font-style: italic; }
-  /* --shift and --dur are set from the measured overflow on mouseenter. 40 px/s
-     is a ticker pace: slow enough to read the opening words, which is what tells
-     one message from another. Removing .scroll resets the transform at once. */
+  /* --shift and --dur are set from the measured overflow on mouseenter. 60 px/s
+     is a ticker pace: about 11 characters a second, slow enough to follow a
+     sentence or two but quick enough to see a long message move. Removing
+     .scroll resets the transform at once. */
   li .say.scroll > span { max-width: none; animation: marquee var(--dur, 20s) linear infinite; }
   @keyframes marquee {
     from { transform: translateX(0); }
@@ -278,7 +279,7 @@ function scrollText(item, on) {
   const shift = text.scrollWidth - say.clientWidth;
   if (shift <= 1) return;  // it already fits; nothing to scroll
   say.style.setProperty("--shift", -shift + "px");
-  say.style.setProperty("--dur", Math.max(4, shift / 40) + "s");
+  say.style.setProperty("--dur", Math.max(4, shift / 60) + "s");
   say.classList.add("scroll");
 }
 

@@ -587,8 +587,8 @@ the files, which the panel does anyway: the chunk `ICMT` tags are concatenated i
 playback order, cached by path, modification time and size so a two-second poll
 over a directory of old chunks costs `stat` calls rather than file reads. Idle, the
 text is one clipped line with an ellipsis; hovering the row scrolls it like a
-news ticker at 40 px/s — slow enough to read the opening words, which is what
-tells one message from another — and leaving resets it to the start. The scroll
+news ticker at 60 px/s — about eleven characters a second, followable without
+crawling — and leaving resets it to the start. The scroll
 distance is measured from the row's real overflow, so a short message does not
 scroll at all and a long one takes as long as it needs instead of running faster.
 Files rendered before the tags existed show `no transcript recorded`. A poll that

@@ -165,7 +165,7 @@ class TestHistoryTranscript:
         assert "text.scrollWidth - say.clientWidth" in body
         # ...and the speed is a constant, so a long text scrolls longer rather
         # than faster.
-        assert "shift / 40" in body
+        assert "shift / 60" in body
 
     def test_a_poll_does_not_rebuild_unchanged_rows(self, panel):
         _status, body = get(panel.base, "/")
