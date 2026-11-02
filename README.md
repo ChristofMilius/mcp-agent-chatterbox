@@ -921,6 +921,7 @@ uv run mcp-agent-chatterbox doctor
 uv run mcp-agent-chatterbox speak "Build finished." --model turbo
 uv run mcp-agent-chatterbox speak "Guten Morgen." --model multilingual --voice <your-clip-name> --language de
 uv run mcp-agent-chatterbox speak "..." --no-play
+uv run mcp-agent-chatterbox speak "..." --wait   # block until rendering and playback finish
 
 # the control panel (stop playback, replay, speak by hand, start/stop the worker)
 # on http://127.0.0.1:8766/
@@ -935,11 +936,13 @@ it from anywhere, install a tiny shim — see
 [Install the `mac` shim](#install-the-mac-shim-to-run-it-from-anywhere).
 
 `worker` runs the resident process in the foreground; it loads the model on the
-first utterance and keeps it loaded. `speak` shares the same code path and blocks
-until the queue is drained, so it is the fastest way to check a fresh install
-without involving MCP at all. `panel` is the only command that needs no GPU: it
-renders nothing and forwards every action to the worker, so it is also safe to
-leave running while another job owns the VRAM.
+first utterance and keeps it loaded. `speak` shares the same code path; by
+default it returns as soon as the worker has accepted the job, so the shell stays
+free for the next command, and `--wait` blocks until the queue is drained. It is
+the fastest way to check a fresh install without involving MCP at all. `panel` is
+the only command that needs no GPU: it renders nothing and forwards every action
+to the worker, so it is also safe to leave running while another job owns the
+VRAM.
 
 ### Install the `mac` shim (to run it from anywhere)
 

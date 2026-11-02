@@ -269,8 +269,12 @@ def _cmd_speak(args) -> int:
     if knobs:
         print("Knobs   : " + ", ".join(f"{k}={v}" for k, v in knobs.items()))
 
-    # The CLI is the operator console, so unlike the MCP tool it blocks: the
-    # shell should not return while the worker is still rendering.
+    if not args.wait:
+        print("Queued  : rendering in the worker (use --wait to block until done).")
+        return 0
+
+    # With --wait the CLI blocks like the operator console: the shell should
+    # not return while the worker is still rendering.
     speaker.wait()
     last = speaker.status()["last"] or {}
     for name in last.get("written", []):
@@ -395,6 +399,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--seed", type=int, default=None, help="Seed torch (reproducible re-render within a session)."
     )
     p_speak.add_argument("--no-play", action="store_true", help="Only write the WAV files.")
+    p_speak.add_argument(
+        "--wait",
+        action="store_true",
+        help="Block until rendering and playback finish (default: return once accepted).",
+    )
     p_speak.set_defaults(func=_cmd_speak)
 
     return parser
