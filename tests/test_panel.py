@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import urllib.error
 import urllib.request
@@ -116,6 +117,17 @@ class TestPage:
         _status, body = get(panel.base, "/")
         for forbidden in ("<script src", "@import", "href=\"http", "url(http"):
             assert forbidden not in body, forbidden
+
+    def test_the_history_list_scrolls_inside_the_window(self, panel):
+        # Every message ever spoken is listed, so the list has to be the scroll
+        # region. A page that grows with each message pushes the controls out of
+        # reach and makes the newest entries the hardest to get to.
+        _status, body = get(panel.base, "/")
+        assert "height: 100dvh" in body
+        assert 'class="grow"' in body
+        rule = re.search(r"#history\s*\{(?P<decls>[^}]*)\}", body)
+        assert rule, "no #history rule"
+        assert "overflow-y: auto" in rule.group("decls")
 
 
 class TestState:

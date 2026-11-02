@@ -18,9 +18,15 @@
     --ok: #4ade80;
   }
   * { box-sizing: border-box; }
+  html, body { height: 100%; }
   body {
     margin: 0; padding: 18px; background: var(--bg); color: var(--text);
     font: 14px/1.45 "Segoe UI", system-ui, sans-serif;
+    /* A column that fills the window: the history section takes whatever height
+       is left, and the page itself only scrolls when the window is too short to
+       give it its floor. */
+    display: flex; flex-direction: column;
+    height: 100vh; height: 100dvh; overflow: auto;
   }
   h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
   header { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -38,6 +44,14 @@
   section {
     background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
     padding: 14px; margin-bottom: 14px;
+    /* Everything except the history keeps its natural height; the page scrolls
+       instead of squeezing the controls. */
+    flex: 0 0 auto;
+  }
+  section.grow {
+    display: flex; flex-direction: column; flex: 1 1 auto;
+    /* The floor that keeps the list usable in a short window. */
+    min-height: 170px;
   }
   section h2 {
     margin: 0 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .08em;
@@ -68,7 +82,18 @@
   li .id { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   li .meta { color: var(--muted); white-space: nowrap; }
   li button { padding: 3px 9px; font-size: 12px; }
-  #msg { min-height: 18px; font-size: 12.5px; color: var(--muted); }
+  /* The list is the scroll region, not the page: it grows with the window down
+     to the section's floor, and an open tab keeps its scroll position across
+     the two-second poll because only the items are replaced. */
+  #history {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+    scrollbar-width: thin; scrollbar-color: #3a414d transparent;
+  }
+  #history::-webkit-scrollbar { width: 10px; }
+  #history::-webkit-scrollbar-thumb {
+    background: #3a414d; border-radius: 999px; border: 2px solid var(--panel);
+  }
+  #msg { min-height: 18px; font-size: 12.5px; color: var(--muted); flex: 0 0 auto; }
   #msg.bad { color: var(--bad); }
 </style>
 </head>
@@ -99,7 +124,7 @@
   </div>
 </section>
 
-<section>
+<section class="grow">
   <h2>History <span id="outdir" class="muted"></span></h2>
   <ul id="history"><li class="muted">nothing rendered yet</li></ul>
 </section>
